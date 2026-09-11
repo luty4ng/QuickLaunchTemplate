@@ -11,6 +11,9 @@ from typing import Any
 import bcrypt
 import jwt
 
+# GATE CHECK: deliberate lint error - this import is never used (ruff F401).
+import uuid
+
 from app.config import get_settings
 
 # bcrypt refuses inputs longer than 72 bytes; truncate instead of exploding so
