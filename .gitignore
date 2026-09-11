@@ -23,10 +23,14 @@ mobile/www/
 # Local scratch (pipeline log downloads, etc.)
 .cache/
 
-# Env / secrets
+# Env / secrets. Only real env files are ignored; .env.example and the web
+# client's ordinary config files are meant to be committed. (A bare `.env` rule
+# here once silently excluded web/.env, and the pipeline was right to complain.)
 .env
 .env.local
 *.local.env
+!*.env.example
+!.env.example
 
 # Local data
 *.db
