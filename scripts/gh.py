@@ -83,7 +83,9 @@ def call(
             if error.code >= 500 or error.code == 429:
                 last = SystemExit(f"{method} {path} -> {error.code}: {detail[:200]}")
             else:
-                raise SystemExit(f"{method} {path} -> {error.code}: {detail[:400]}") from None
+                raise SystemExit(
+                    f"{method} {path} -> {error.code}: {detail[:400]}"
+                ) from None
         except (urllib.error.URLError, TimeoutError, OSError) as error:
             last = error
         if attempt < attempts:
@@ -118,7 +120,9 @@ def cmd_ensure_repo(args: argparse.Namespace) -> int:
         )
         print(f"repo created: {repo['full_name']} -> {repo['html_url']}")
     actions = call("GET", f"/repos/{full}/actions/permissions")
-    print(f"actions enabled={actions.get('enabled')} allowed_actions={actions.get('allowed_actions')}")
+    print(
+        f"actions enabled={actions.get('enabled')} allowed_actions={actions.get('allowed_actions')}"
+    )
     return 0
 
 
@@ -151,7 +155,11 @@ def cmd_wait(args: argparse.Namespace) -> int:
     watched: dict[int, str] = {}
     while True:
         runs = call("GET", f"/repos/{REPO}/actions/runs?per_page=50")["workflow_runs"]
-        mine = [r for r in runs if r["head_sha"].startswith(args.sha) or r["head_sha"] == args.sha]
+        mine = [
+            r
+            for r in runs
+            if r["head_sha"].startswith(args.sha) or r["head_sha"] == args.sha
+        ]
         if not mine:
             if time.time() > deadline:
                 print("no workflow run appeared for that commit")
@@ -174,7 +182,9 @@ def cmd_wait(args: argparse.Namespace) -> int:
         print(f"#{run['id']} {run['name']} ({run['head_sha'][:7]}) -> {conclusion}")
         if conclusion != "success":
             failed += 1
-            for job in call("GET", f"/repos/{REPO}/actions/runs/{run['id']}/jobs")["jobs"]:
+            for job in call("GET", f"/repos/{REPO}/actions/runs/{run['id']}/jobs")[
+                "jobs"
+            ]:
                 if job["conclusion"] == "success":
                     continue
                 print(f"  FAILED JOB: {job['name']} -> {job['conclusion']}")
@@ -214,14 +224,26 @@ def cmd_set_secret(args: argparse.Namespace) -> int:
     with open(args.value_file, encoding="utf-8") as handle:
         value = handle.read().strip()
     public_key = serialization.load_pem_public_key(key["key"].encode())
-    sealed = public_key.encrypt(value.encode(), padding.OAEP(mgf=padding.MGF1(hashes.SHA256()), algorithm=hashes.SHA256(), label=None))
-    call("PUT", f"/repos/{REPO}/actions/secrets/{args.name}", {"encrypted_value": base64.b64encode(sealed).decode(), "key_id": key["key_id"]}, ok=(201, 204))
+    sealed = public_key.encrypt(
+        value.encode(),
+        padding.OAEP(
+            mgf=padding.MGF1(hashes.SHA256()), algorithm=hashes.SHA256(), label=None
+        ),
+    )
+    call(
+        "PUT",
+        f"/repos/{REPO}/actions/secrets/{args.name}",
+        {"encrypted_value": base64.b64encode(sealed).decode(), "key_id": key["key_id"]},
+        ok=(201, 204),
+    )
     print(f"secret {args.name} set")
     return 0
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("whoami").set_defaults(func=cmd_whoami)

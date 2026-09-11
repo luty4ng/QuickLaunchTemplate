@@ -21,7 +21,7 @@ import zipfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from gh import REPO, call  # noqa: E402
+from gh import REPO
 
 CACHE = Path(__file__).resolve().parents[1] / ".cache"
 
@@ -44,9 +44,13 @@ def main() -> int:
     parser.add_argument("--run-id", type=int, required=True)
     parser.add_argument("--list", action="store_true")
     parser.add_argument("--job", help="substring of the step file name to print")
-    parser.add_argument("--grep", default=r"FAILED|ERROR|Error:|error:|Traceback|assert|##\[error\]")
+    parser.add_argument(
+        "--grep", default=r"FAILED|ERROR|Error:|error:|Traceback|assert|##\[error\]"
+    )
     parser.add_argument("--tail", type=int, default=40)
-    parser.add_argument("--desktop-only", action="store_true", help="print step names only")
+    parser.add_argument(
+        "--desktop-only", action="store_true", help="print step names only"
+    )
     args = parser.parse_args()
 
     archive = fetch(args.run_id)

@@ -21,8 +21,10 @@ concurrency:
 env:
   PYTHON_VERSION: '3.12'
   NODE_VERSION: '22'
-  # GHCR requires a lower-case image path.
-  IMAGE: ghcr.io/${{ github.repository }}
+  # GHCR rejects upper-case paths. This repository is "QuickLaunchTemplate", so
+  # the name must be lower-cased here - using github.repository directly works
+  # until the first push and then fails in the most confusing way possible.
+  IMAGE: ghcr.io/${{ github.repository_owner }}/quicklaunchtemplate
 
 jobs:
   # ---------------------------------------------------------------------
@@ -102,6 +104,10 @@ jobs:
         run: |
           ruff check .
           ruff format --check .
+          # scripts/ is part of the delivery path: smoke.py is a deploy gate and
+          # desktop_api_stub.py runs during desktop verification.
+          ruff check ../scripts
+          ruff format --check ../scripts
 
       - name: migrations apply to postgres 16
         working-directory: backend
@@ -299,16 +305,34 @@ jobs:
 
   # ---------------------------------------------------------------------
   # 3. The other two clients. Same web bundle, wrapped twice.
+  #
+  # Desktop packaging is split by platform on purpose: electron-builder builds a
+  # Windows NSIS installer by driving Wine, and "spawn wine ENOENT" is what that
+  # looks like from a Linux runner. Whatever the host OS is, it builds that OS's
+  # installer - no emulation.
   # ---------------------------------------------------------------------
   desktop:
-    name: desktop / package (windows + linux)
-    runs-on: ubuntu-latest
+    name: desktop / package (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
     needs: [changes, verify-web]
     if: |
       always()
       && needs.verify-web.result != 'failure'
       && needs.verify-web.result != 'cancelled'
       && github.event_name != 'pull_request'
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: windows
+            runner: windows-latest
+            script: dist:win
+            artifact: desktop-windows
+          - target: linux
+            runner: ubuntu-latest
+            script: dist:linux
+            artifact: desktop-linux
 
     steps:
       - uses: actions/checkout@v7
@@ -317,19 +341,20 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
-          cache-dependency-path: desktop/package-lock.json
+          cache-dependency-path: |
+            desktop/package-lock.json
+            web/package-lock.json
 
-      - name: install desktop toolchain
+      - name: install toolchains
         working-directory: desktop
         run: npm ci --no-audit --no-fund
 
-      - name: build web bundle for the embedded shell
-        working-directory: web
-        env:
-          VITE_WEB_BASE: './'
-        run: |
-          npm ci --no-audit --no-fund
-          npm run build
+      # The desktop shell ships the web bundle as a resource; the web job's
+      # artifact is the same bytes, so reuse it instead of rebuilding.
+      - uses: actions/download-artifact@v8
+        with:
+          name: web-dist
+          path: web/dist
 
       - name: package
         working-directory: desktop
@@ -337,16 +362,15 @@ jobs:
           # Public URL the packaged app talks to by default. Empty = same origin.
           QL_API_BASE: ${{ vars.QL_API_BASE }}
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-        run: npm run dist
+        run: npm run ${{ matrix.script }}
 
       - uses: actions/upload-artifact@v7
         with:
-          name: desktop
+          name: ${{ matrix.artifact }}
           path: |
             desktop/release/*.exe
             desktop/release/*.AppImage
             desktop/release/*.deb
-            desktop/release/*.blockmap
           if-no-files-found: error
           retention-days: 7
 
@@ -363,7 +387,7 @@ jobs:
 
       - uses: actions/download-artifact@v8
         with:
-          name: desktop
+          name: desktop-windows
           path: dist
 
       - uses: actions/setup-python@v7
@@ -448,6 +472,10 @@ jobs:
         working-directory: web
         env:
           VITE_WEB_BASE: './'
+          # Capacitor copies whatever `webDir` points at, so the bundle has to be
+          # emitted straight into mobile/www - building to web/dist and syncing
+          # fails with "Could not find the web assets directory: ./www".
+          VITE_OUT_DIR: ../mobile/www
           # The APK must call a reachable server. Set the repository variable
           # QL_API_BASE to the deployed URL; localhost would only work on an
           # emulator, which is why the runtime override in the UI exists too.
@@ -519,7 +547,12 @@ jobs:
 
       - uses: actions/download-artifact@v8
         with:
-          name: desktop
+          name: desktop-windows
+          path: dist/desktop
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: desktop-linux
           path: dist/desktop
 
       - uses: actions/download-artifact@v8

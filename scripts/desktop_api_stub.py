@@ -32,18 +32,28 @@ class Stub(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Headers", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET,POST,PATCH,DELETE,OPTIONS")
+        self.send_header(
+            "Access-Control-Allow-Methods", "GET,POST,PATCH,DELETE,OPTIONS"
+        )
         self.end_headers()
         self.wfile.write(body)
 
-    def do_OPTIONS(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+    def do_OPTIONS(self) -> None:
         self._send(204, {})
 
-    def do_GET(self) -> None:  # noqa: N802
+    def do_GET(self) -> None:
         if self.path.startswith("/api/health"):
             self._send(200, {"status": "ok", "database": "stub", "version": "1.0.0"})
         elif self.path.startswith("/api/auth/me") or self.path.startswith("/api/todos"):
-            self._send(401, {"error": {"code": "unauthenticated", "message": "Sign in to continue."}})
+            self._send(
+                401,
+                {
+                    "error": {
+                        "code": "unauthenticated",
+                        "message": "Sign in to continue.",
+                    }
+                },
+            )
         else:
             self._send(404, {"error": {"code": "not_found", "message": "stub"}})
 

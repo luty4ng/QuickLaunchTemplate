@@ -31,7 +31,10 @@ CHECKS: list[tuple[str, bool, str]] = []
 
 def record(name: str, ok: bool, detail: str = "") -> None:
     CHECKS.append((name, ok, detail))
-    print(f"{'PASS' if ok else 'FAIL'}  {name}{f' :: {detail}' if detail else ''}", flush=True)
+    print(
+        f"{'PASS' if ok else 'FAIL'}  {name}{f' :: {detail}' if detail else ''}",
+        flush=True,
+    )
 
 
 class Session:
@@ -42,7 +45,12 @@ class Session:
         self.cookie: str | None = None
 
     def request(
-        self, method: str, path: str, payload: dict | None = None, *, timeout: int = TIMEOUT
+        self,
+        method: str,
+        path: str,
+        payload: dict | None = None,
+        *,
+        timeout: int = TIMEOUT,
     ) -> tuple[int, object, float]:
         data = json.dumps(payload).encode() if payload is not None else None
         request = urllib.request.Request(f"{self.base}{path}", data=data, method=method)
@@ -109,7 +117,7 @@ def check_spa(base_url: str) -> None:
     status, html = session.get_text("/")
     record(
         "web shell is served at /",
-        status == 200 and "<div id=\"root\">" in html,
+        status == 200 and '<div id="root">' in html,
         f"status={status} bytes={len(html)}",
     )
 
@@ -120,16 +128,26 @@ def check_journey(base_url: str) -> str | None:
     password = "smoke-test-password"
     user = Session(base_url)
 
-    status, body, _ = user.request("POST", "/api/auth/register", {"email": email, "password": password})
+    status, body, _ = user.request(
+        "POST", "/api/auth/register", {"email": email, "password": password}
+    )
     record("register returns 201", status == 201, f"status={status} body={body}")
     if status != 201:
         return None
 
     status, body, _ = user.request("GET", "/api/todos")
-    record("new account starts empty", status == 200 and body == [], f"status={status} body={body}")
+    record(
+        "new account starts empty",
+        status == 200 and body == [],
+        f"status={status} body={body}",
+    )
 
     status, created, _ = user.request("POST", "/api/todos", {"title": "smoke: created"})
-    ok = status == 201 and isinstance(created, dict) and created.get("title") == "smoke: created"
+    ok = (
+        status == 201
+        and isinstance(created, dict)
+        and created.get("title") == "smoke: created"
+    )
     record("create todo returns 201", ok, f"status={status} body={created}")
     if not ok or not isinstance(created, dict):
         return None
@@ -138,7 +156,9 @@ def check_journey(base_url: str) -> str | None:
     status, listed, _ = user.request("GET", "/api/todos")
     record(
         "created todo is listed",
-        status == 200 and isinstance(listed, list) and [t["id"] for t in listed] == [todo_id],
+        status == 200
+        and isinstance(listed, list)
+        and [t["id"] for t in listed] == [todo_id],
         f"status={status}",
     )
 
@@ -153,13 +173,19 @@ def check_journey(base_url: str) -> str | None:
     record("delete returns 204", status == 204, f"status={status}")
 
     status, listed, _ = user.request("GET", "/api/todos")
-    record("todo list is empty again", status == 200 and listed == [], f"status={status} body={listed}")
+    record(
+        "todo list is empty again",
+        status == 200 and listed == [],
+        f"status={status} body={listed}",
+    )
 
     status, _, _ = user.request("POST", "/api/auth/logout")
     record("logout returns 204", status == 204, f"status={status}")
 
     status, body, _ = user.request("GET", "/api/todos")
-    record("session is dead after logout", status == 401, f"status={status} body={body}")
+    record(
+        "session is dead after logout", status == 401, f"status={status} body={body}"
+    )
 
     return email
 
@@ -169,8 +195,16 @@ def check_isolation(base_url: str) -> None:
     suffix = uuid.uuid4().hex[:10]
     alice = Session(base_url)
     bob = Session(base_url)
-    alice.request("POST", "/api/auth/register", {"email": f"alice+{suffix}@example.com", "password": "isolation-pw"})
-    bob.request("POST", "/api/auth/register", {"email": f"bob+{suffix}@example.com", "password": "isolation-pw"})
+    alice.request(
+        "POST",
+        "/api/auth/register",
+        {"email": f"alice+{suffix}@example.com", "password": "isolation-pw"},
+    )
+    bob.request(
+        "POST",
+        "/api/auth/register",
+        {"email": f"bob+{suffix}@example.com", "password": "isolation-pw"},
+    )
 
     _, created, _ = alice.request("POST", "/api/todos", {"title": "alice only"})
     if not isinstance(created, dict):
@@ -179,7 +213,9 @@ def check_isolation(base_url: str) -> None:
     todo_id = created["id"]
 
     status, body, _ = bob.request("PATCH", f"/api/todos/{todo_id}", {"done": True})
-    record("isolation: foreign PATCH is 404", status == 404, f"status={status} body={body}")
+    record(
+        "isolation: foreign PATCH is 404", status == 404, f"status={status} body={body}"
+    )
 
     status, _, _ = bob.request("DELETE", f"/api/todos/{todo_id}")
     record("isolation: foreign DELETE is 404", status == 404, f"status={status}")
@@ -194,21 +230,39 @@ def check_isolation(base_url: str) -> None:
 
 def check_login(base_url: str, email: str | None) -> None:
     if not email:
-        record("log in again with the same credentials", False, "registration failed earlier")
+        record(
+            "log in again with the same credentials",
+            False,
+            "registration failed earlier",
+        )
         return
     user = Session(base_url)
-    status, body, _ = user.request("POST", "/api/auth/login", {"email": email, "password": "smoke-test-password"})
-    record("log in with the same credentials", status == 200, f"status={status} body={body}")
+    status, body, _ = user.request(
+        "POST", "/api/auth/login", {"email": email, "password": "smoke-test-password"}
+    )
+    record(
+        "log in with the same credentials",
+        status == 200,
+        f"status={status} body={body}",
+    )
 
-    status, body, _ = user.request("POST", "/api/auth/login", {"email": email, "password": "wrong-password"})
+    status, body, _ = user.request(
+        "POST", "/api/auth/login", {"email": email, "password": "wrong-password"}
+    )
     record("wrong password is rejected", status == 401, f"status={status}")
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument("--base-url", default="http://127.0.0.1:8000")
     parser.add_argument("--health-budget-ms", type=int, default=1000)
-    parser.add_argument("--skip-spa", action="store_true", help="API-only mode (no web client in the image)")
+    parser.add_argument(
+        "--skip-spa",
+        action="store_true",
+        help="API-only mode (no web client in the image)",
+    )
     args = parser.parse_args()
 
     print(f"smoke testing {args.base_url}", flush=True)
@@ -220,7 +274,11 @@ def main() -> int:
             break
         except Exception:  # noqa: BLE001
             if attempt == 30:
-                record("deployment accepts connections", False, "no response after 30 attempts")
+                record(
+                    "deployment accepts connections",
+                    False,
+                    "no response after 30 attempts",
+                )
                 return 1
             time.sleep(2)
 
