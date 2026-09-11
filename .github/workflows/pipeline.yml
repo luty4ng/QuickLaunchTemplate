@@ -247,12 +247,13 @@ jobs:
           name: app-image
           path: /tmp
 
-      # The migrations service in compose.yaml runs first, the app waits for it.
-      # This is the step that fails loudly when a schema change is broken.
+      # The migrations service in compose.yaml runs first and the app waits for
+      # it, so a broken schema change fails here - loudly - instead of surfacing
+      # as 500s after the rollout. Gating is explicit rather than relying on
+      # `--wait` semantics, so the log says exactly which condition was met.
       - name: start the stack
         env:
           APP_IMAGE: ${{ env.IMAGE }}:sha-${{ github.sha }}
-          APP_IMAGE_ARCHIVE: /tmp/image.tar
           JWT_SECRET: deploy-time-secret-that-is-long-enough-0001
           POSTGRES_PASSWORD: ci-postgres-password
           APP_PORT: '8000'
@@ -261,13 +262,38 @@ jobs:
           short="${GITHUB_SHA::7}"
           docker load -i /tmp/image.tar
           docker tag "${IMAGE}:sha-${short}" "${IMAGE}:sha-${GITHUB_SHA}"
-          APP_IMAGE="${IMAGE}:sha-${GITHUB_SHA}" docker compose -f compose.yaml up -d --wait
+          export APP_IMAGE="${IMAGE}:sha-${GITHUB_SHA}"
+
+          docker compose -f compose.yaml up -d --wait db
+          for i in $(seq 1 30); do
+            state=$(docker inspect --format '{{.State.Health.Status}}' "$(docker compose ps -q db)")
+            [ "$state" = "healthy" ] && break
+            sleep 1
+          done
+          echo "db health: $state"
+          [ "$state" = "healthy" ]
+
+          echo "--- applying migrations (one-shot service) ---"
+          docker compose -f compose.yaml up --exit-code-from migrate migrate
+
+          echo "--- starting the app ---"
+          docker compose -f compose.yaml up -d --wait app
+          docker compose -f compose.yaml ps -a
 
       - name: show container state
         if: always()
         run: |
           docker compose -f compose.yaml ps -a || true
-          docker compose -f compose.yaml logs --tail 80 || true
+          for c in $(docker compose -f compose.yaml ps -aq); do
+            echo "===== inspect $c ====="
+            docker inspect --format '{{.Name}} state={{.State.Status}} health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}} exit={{.State.ExitCode}}' "$c"
+            echo "----- last health probe output -----"
+            docker inspect --format '{{range .State.Health.Log}}{{.ExitCode}}: {{.Output}}{{end}}' "$c" 2>/dev/null | tail -c 800 || true
+          done
+          echo "===== migrate logs ====="
+          docker compose -f compose.yaml logs migrate || true
+          echo "===== app logs ====="
+          docker compose -f compose.yaml logs app || true
 
       - name: smoke test the live deployment
         run: python3 scripts/smoke.py --base-url http://127.0.0.1:8000 --health-budget-ms 1000
@@ -301,10 +327,15 @@ jobs:
           fi
           previous="${PREVIOUS_SHA:0:7}"
           echo "redeploying ${IMAGE}:sha-${previous}"
+          docker compose -f compose.yaml down -v
           docker pull "${IMAGE}:sha-${previous}"
-          APP_IMAGE="${IMAGE}:sha-${previous}" JWT_SECRET=deploy-time-secret-that-is-long-enough-0001 \
-            POSTGRES_PASSWORD=ci-postgres-password APP_PORT=8000 \
-            docker compose -f compose.yaml up -d --wait
+          export APP_IMAGE="${IMAGE}:sha-${previous}"
+          export JWT_SECRET=deploy-time-secret-that-is-long-enough-0001
+          export POSTGRES_PASSWORD=ci-postgres-password
+          export APP_PORT=8000
+          docker compose -f compose.yaml up -d --wait db
+          docker compose -f compose.yaml up --exit-code-from migrate migrate
+          docker compose -f compose.yaml up -d --wait app
           python3 scripts/smoke.py --base-url http://127.0.0.1:8000 --skip-spa
 
       - name: report the rollback rehearsal
@@ -418,8 +449,10 @@ jobs:
           # The zip target is a plain archive of the packaged app directory.
           # Extracting a self-extracting installer would work too, but it
           # launches the app as a side effect - not what a CI step wants.
-          $zip = Get-ChildItem dist -Filter 'QuickLaunch-*-x64.zip' | Select-Object -First 1
-          if (-not $zip) { throw "no desktop zip in the artifact: $((Get-ChildItem dist).Name -join ', ')" }
+          Write-Host "artifact contents:"
+          Get-ChildItem dist | Select-Object Name, Length | Format-Table | Out-String | Write-Host
+          $zip = Get-ChildItem dist -Filter '*.zip' | Select-Object -First 1
+          if (-not $zip) { throw "no desktop zip in the artifact" }
           Expand-Archive -Path $zip.FullName -DestinationPath "$PWD\app" -Force
           Get-ChildItem "$PWD\app" | Select-Object -First 10 Name
 

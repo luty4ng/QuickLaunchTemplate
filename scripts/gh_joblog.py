@@ -1,12 +1,11 @@
 #!/usr/bin/env python
-"""Fetch a workflow job's log over the API, without the web UI.
+"""Fetch a workflow job's log, following the redirect to blob storage manually.
 
-GitHub redirects these to pre-signed blob storage; the signed URL rejects our
-Authorization header, so the redirect is followed manually and the token is
-dropped. Transient SSL/EOF errors are retried.
+GitHub answers this endpoint with a 302 to a pre-signed URL. The signed URL
+rejects the Authorization header, and urllib's default redirect handling keeps
+it, which surfaces as a confusing SSL EOF. The token is dropped on the hop.
 
-    python scripts/gh_joblog.py --job-id 123456 --tail 60
-    python scripts/gh_joblog.py --job-id 123456 --grep "error|FAILED"
+    python scripts/gh_joblog.py --job-id 123456 --grep "error" --tail 30
 """
 
 from __future__ import annotations
@@ -23,7 +22,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gh import REPO, token  # noqa: E402
 
 
-def fetch(job_id: int, attempts: int = 5) -> str:
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001
+        # Never inherit headers: the pre-signed URL authenticates itself.
+        return urllib.request.Request(newurl)
+
+
+def plain_get(url: str) -> str:
+    request = urllib.request.Request(url)
+    request.add_header("User-Agent", "quicklaunch-demo")
+    with urllib.request.urlopen(request, timeout=120) as response:
+        return response.read().decode("utf-8", errors="replace")
+
+
+def fetch(job_id: int, attempts: int = 4) -> str:
     url = f"https://api.github.com/repos/{REPO}/actions/jobs/{job_id}/logs"
     last: Exception | None = None
     for attempt in range(1, attempts + 1):
@@ -31,17 +43,17 @@ def fetch(job_id: int, attempts: int = 5) -> str:
             request = urllib.request.Request(url)
             request.add_header("Authorization", "Bearer " + token())
             request.add_header("User-Agent", "quicklaunch-demo")
-
-            class NoRedirect(urllib.request.HTTPRedirectHandler):
-                def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001
-                    # Strip the auth header: the pre-signed URL signs its own.
-                    plain = urllib.request.Request(newurl)
-                    plain.add_header("User-Agent", "quicklaunch-demo")
-                    return plain
-
-            opener = urllib.request.build_opener(NoRedirect)
-            with opener.open(request, timeout=120) as response:
-                return response.read().decode("utf-8", errors="replace")
+            opener = urllib.request.build_opener(_NoRedirect)
+            try:
+                with opener.open(request, timeout=120) as response:
+                    return response.read().decode("utf-8", errors="replace")
+            except urllib.error.HTTPError as error:
+                if error.code not in (301, 302, 303, 307, 308):
+                    raise
+                location = error.headers.get("Location")
+                if not location:
+                    raise
+                return plain_get(location)
         except (urllib.error.URLError, TimeoutError, OSError) as error:
             last = error
             if attempt < attempts:
@@ -52,30 +64,29 @@ def fetch(job_id: int, attempts: int = 5) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--job-id", type=int, required=True)
-    parser.add_argument("--grep", default=r"error|Error|ERROR|FAILED|Traceback|failed")
+    parser.add_argument("--grep", default=r"error|Error|ERROR|FAILED|failed|Traceback")
     parser.add_argument("--tail", type=int, default=30)
-    parser.add_argument("--context", type=int, default=1)
-    parser.add_argument("--all", action="store_true", help="print the whole log")
+    parser.add_argument("--context", type=int, default=2)
+    parser.add_argument("--all", action="store_true")
     args = parser.parse_args()
 
     text = fetch(args.job_id)
     lines = [re.sub(r"^\S+Z\s?", "", line).rstrip() for line in text.replace("\r", "").splitlines()]
 
     if args.all:
-        print("\n".join(lines))
+        for line in lines:
+            print(line.encode("ascii", errors="replace").decode("ascii"))
         return 0
 
     pattern = re.compile(args.grep)
     hits = [i for i, line in enumerate(lines) if pattern.search(line)]
     if not hits:
-        print("(no matching lines)")
+        print(f"(no lines matching {args.grep!r})")
         return 0
     shown: set[int] = set()
     for index in hits[-2:]:
-        start = max(0, index - args.context)
-        end = min(len(lines), index + args.tail)
         print("---")
-        for position in range(start, end):
+        for position in range(max(0, index - args.context), min(len(lines), index + args.tail)):
             if position in shown:
                 continue
             shown.add(position)
