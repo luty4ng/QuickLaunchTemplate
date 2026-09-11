@@ -162,6 +162,17 @@ jobs:
         working-directory: web
         run: npm run build
 
+      - name: process the built bundle
+        working-directory: web
+        run: |
+          # The bundle must be root-relative ("." base) so the identical artifact
+          # also loads from app://bundle and from the Android WebView. That comes
+          # from web/.env, not from a per-job environment variable, so every job
+          # cannot drift from the others.
+          grep -q 'src="\./assets/' dist/index.html \
+            || { echo "dist/index.html does not use relative asset paths"; cat dist/index.html; exit 1; }
+          echo "bundle uses relative asset paths"
+
       - uses: actions/upload-artifact@v7
         with:
           name: web-dist
