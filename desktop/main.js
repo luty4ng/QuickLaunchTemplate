@@ -65,27 +65,54 @@ function createWindow() {
     if (SELF_TEST) finish({ ok: false, reason: `could not load the bundle: ${error.message}` })
   })
 
-  if (SELF_TEST) void runSelfTest(window)
+  if (SELF_TEST) {
+    // Renderer console output is the only clue when a page loads but never runs.
+    window.webContents.on('console-message', (event) => {
+      console.log(`QL_CONSOLE ${event.level}: ${event.message}`)
+    })
+    window.webContents.on('did-finish-load', () => console.log('QL_LOADED did-finish-load'))
+    window.webContents.on('did-fail-load', (_event, code, description, url) => {
+      console.log(`QL_LOAD_FAILED ${code} ${description} ${url}`)
+    })
+    void runSelfTest(window)
+  }
   return window
 }
 
 async function waitForMount(window, timeoutMs = 20000) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
-    const mounted = await window.webContents.executeJavaScript(
-      'document.getElementById("root")?.dataset.appReady === "true"',
-    )
-    if (mounted) return true
+    try {
+      const mounted = await window.webContents.executeJavaScript(
+        'document.getElementById("root")?.dataset.appReady === "true"',
+      )
+      if (mounted) return true
+    } catch (error) {
+      // A blank or broken page throws here; keep polling until the deadline so
+      // the caller can report the real reason instead of a crash.
+      if (SELF_TEST) console.log(`QL_SELF_TEST probe failed: ${error.message}`)
+    }
     await new Promise((resolve) => setTimeout(resolve, 250))
   }
   return false
 }
 
 async function runSelfTest(window) {
-  const result = { ok: false, checks: {} }
+  const result = { ok: false, checks: {}, debug: {} }
   try {
+    const root = resolveWebRoot()
+    result.debug.webRoot = root
+    result.debug.webRootIndexExists = fs.existsSync(path.join(root, 'index.html'))
+    result.debug.apiBase = API_BASE
+    result.debug.files = fs.existsSync(root) ? fs.readdirSync(root).slice(0, 10) : []
+
     result.checks.bundleMounted = await waitForMount(window)
-    if (!result.checks.bundleMounted) return finish({ ...result, reason: 'React never mounted' })
+    if (!result.checks.bundleMounted) {
+      result.debug.location = await window.webContents
+        .executeJavaScript('location.href')
+        .catch((error) => `unavailable: ${error.message}`)
+      return finish({ ...result, reason: 'React never mounted' })
+    }
 
     // Proves the preload bridge survived packaging.
     result.checks.preloadBridge = await window.webContents.executeJavaScript(
@@ -118,6 +145,10 @@ function finish(result) {
 
 app.whenReady().then(() => {
   Menu.setApplicationMenu(null)
+  // Headless CI has no GPU; Electron's GPU process can stall the renderer there.
+  // Software rendering is what a self-test wants anyway - it is testing wiring,
+  // not pixels.
+  if (SELF_TEST) app.disableHardwareAcceleration()
   createWindow()
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()

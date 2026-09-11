@@ -239,6 +239,14 @@ jobs:
     runs-on: ubuntu-latest
     needs: docker
 
+    # compose.yaml interpolates these for every docker compose command, not just
+    # the one that starts the stack - without them even `compose down` fails with
+    # "required variable JWT_SECRET is missing a value".
+    env:
+      JWT_SECRET: deploy-time-secret-that-is-long-enough-0001
+      POSTGRES_PASSWORD: ci-postgres-password
+      APP_PORT: '8000'
+
     steps:
       - uses: actions/checkout@v7
 
@@ -254,9 +262,6 @@ jobs:
       - name: start the stack
         env:
           APP_IMAGE: ${{ env.IMAGE }}:sha-${{ github.sha }}
-          JWT_SECRET: deploy-time-secret-that-is-long-enough-0001
-          POSTGRES_PASSWORD: ci-postgres-password
-          APP_PORT: '8000'
         run: |
           set -euo pipefail
           short="${GITHUB_SHA::7}"
@@ -330,9 +335,6 @@ jobs:
           docker compose -f compose.yaml down -v
           docker pull "${IMAGE}:sha-${previous}"
           export APP_IMAGE="${IMAGE}:sha-${previous}"
-          export JWT_SECRET=deploy-time-secret-that-is-long-enough-0001
-          export POSTGRES_PASSWORD=ci-postgres-password
-          export APP_PORT=8000
           docker compose -f compose.yaml up -d --wait db
           docker compose -f compose.yaml up --exit-code-from migrate migrate
           docker compose -f compose.yaml up -d --wait app
@@ -471,6 +473,9 @@ jobs:
         shell: pwsh
         env:
           QL_API_BASE: http://127.0.0.1:8123
+          # Surfaces renderer console output (CORS, CSP, load failures) in the
+          # job log; without it a "blank window" is undiagnosable from CI.
+          ELECTRON_ENABLE_LOGGING: '1'
         run: |
           $exe = Get-ChildItem "$PWD\app" -Filter 'QuickLaunch.exe' -Recurse | Select-Object -First 1
           if (-not $exe) { throw 'QuickLaunch.exe not found after extraction' }

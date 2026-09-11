@@ -41,7 +41,10 @@ def main() -> int:
             print("FAIL no AndroidManifest.xml in the apk")
             return 1
         manifest = archive.read("AndroidManifest.xml")
-        if args.package.encode() not in manifest:
+        # Android's binary XML stores strings as length-prefixed UTF-8 or
+        # UTF-16; checking only the UTF-8 bytes gives a false negative.
+        encoded = (args.package.encode("utf-8"), args.package.encode("utf-16-le"))
+        if not any(candidate in manifest for candidate in encoded):
             print(f"FAIL package id {args.package!r} not found in AndroidManifest.xml")
             return 1
         print(f"ok   package id {args.package} present in the binary manifest")
