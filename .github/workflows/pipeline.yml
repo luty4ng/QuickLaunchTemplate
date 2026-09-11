@@ -399,12 +399,29 @@ jobs:
         working-directory: desktop
         run: npm ci --no-audit --no-fund
 
-      # The desktop shell ships the web bundle as a resource; the web job's
-      # artifact is the same bytes, so reuse it instead of rebuilding.
+      # The desktop shell ships the web bundle as a resource. Reuse the web
+      # job's artifact when it exists, but do not depend on it: that job is
+      # skipped when nothing under web/ changed, and a missing artifact would
+      # otherwise fail an unrelated desktop build.
       - uses: actions/download-artifact@v8
+        continue-on-error: true
         with:
           name: web-dist
           path: web/dist
+
+      - name: build the web bundle if the artifact was not there
+        working-directory: web
+        env:
+          VITE_WEB_BASE: './'
+        run: |
+          if [ -f dist/index.html ]; then
+            echo "reusing the web job's artifact"
+            ls -la dist
+            exit 0
+          fi
+          echo "no web artifact (that job was skipped); building here"
+          npm ci --no-audit --no-fund
+          npm run build
 
       - name: package
         working-directory: desktop
@@ -589,6 +606,8 @@ jobs:
         run: |
           npm ci --no-audit --no-fund
           npm run build
+          # Fail here, with a clear message, rather than inside cap sync.
+          test -f ../mobile/www/index.html
 
       - name: generate the native project, then copy the bundle into it
         working-directory: mobile
@@ -657,13 +676,18 @@ jobs:
         with:
           name: web-dist
           path: dist/web
+        continue-on-error: true
 
       - name: assemble the release bundle
         run: |
           set -euo pipefail
           cd dist
-          zip -qr "web-${GITHUB_SHA::7}.zip" web
-          rm -rf web
+          if [ -f web/index.html ]; then
+            zip -qr "web-${GITHUB_SHA::7}.zip" web
+            rm -rf web
+          else
+            echo "no static web artifact in this run (web/ unchanged); skipping that zip"
+          fi
           ls -lhR .
 
       - uses: softprops/action-gh-release@v3
