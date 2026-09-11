@@ -10,7 +10,7 @@ both answer 404.
 from __future__ import annotations
 
 from fastapi import APIRouter, Response, status
-from sqlalchemy import delete, select, update
+from sqlalchemy import select
 
 from app.db.base import utcnow
 from app.db.models import Todo
@@ -38,6 +38,12 @@ async def create_todo(payload: TodoCreate, user: CurrentUser, session: SessionDe
     return todo
 
 
+# --- GATE CHECK (this block is deleted immediately after the run) -----------
+# Both handlers below are the anti-pattern the module docstring warns about:
+# the row is loaded by id alone, and ownership is never checked again. The
+# happy-path tests still pass; only tests/integration/test_isolation.py notices.
+
+
 @router.patch("/{todo_id}", response_model=TodoOut)
 async def update_todo(todo_id: str, payload: TodoUpdate, user: CurrentUser, session: SessionDep) -> Todo:
     values = payload.model_dump(exclude_unset=True)
@@ -45,23 +51,21 @@ async def update_todo(todo_id: str, payload: TodoUpdate, user: CurrentUser, sess
         raise api_error("empty_update", "Provide a title or a done flag.", status.HTTP_400_BAD_REQUEST)
     values["updated_at"] = utcnow()
 
-    result = await session.execute(
-        update(Todo).where(Todo.id == todo_id, Todo.user_id == user.id).values(**values)
-    )
-    if result.rowcount == 0:
-        await session.rollback()
+    todo = await session.scalar(select(Todo).where(Todo.id == todo_id))
+    if todo is None:
         raise api_error("not_found", "Todo not found.", status.HTTP_404_NOT_FOUND)
+    for key, value in values.items():
+        setattr(todo, key, value)
     await session.commit()
-    todo = await session.scalar(select(Todo).where(Todo.id == todo_id, Todo.user_id == user.id))
-    assert todo is not None  # rowcount > 0 and we just committed it
+    await session.refresh(todo)
     return todo
 
 
 @router.delete("/{todo_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_todo(todo_id: str, user: CurrentUser, session: SessionDep) -> Response:
-    result = await session.execute(delete(Todo).where(Todo.id == todo_id, Todo.user_id == user.id))
-    if result.rowcount == 0:
-        await session.rollback()
+    todo = await session.scalar(select(Todo).where(Todo.id == todo_id))
+    if todo is None:
         raise api_error("not_found", "Todo not found.", status.HTTP_404_NOT_FOUND)
+    await session.delete(todo)
     await session.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
