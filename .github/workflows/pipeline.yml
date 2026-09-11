@@ -275,13 +275,20 @@ jobs:
       - name: verify the image healthcheck agrees
         run: |
           cid="$(docker compose -f compose.yaml ps -q app)"
-          state="$(docker inspect --format '{{.State.Health.Status}}' "$cid")"
-          echo "container health: $state"
-          test "$state" = "healthy"
+          # Docker checks every 10s; polling avoids racing the check interval.
+          for i in $(seq 1 18); do
+            state="$(docker inspect --format '{{.State.Health.Status}}' "$cid")"
+            echo "container health: $state"
+            [ "$state" = "healthy" ] && exit 0
+            sleep 5
+          done
+          echo "container never reported healthy"; exit 1
 
       # Rollback rehearsal: redeploy the previous sha- tag and prove the service
       # comes back. Skipped on the very first successful build, when there is no
-      # earlier tag to go back to.
+      # earlier tag to go back to. continue-on-error keeps a rehearsal failure
+      # from failing an otherwise healthy deploy, but the next step reports the
+      # outcome loudly rather than swallowing it.
       - name: rollback rehearsal
         id: rollback
         continue-on-error: true
@@ -290,14 +297,24 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${PREVIOUS_SHA:-}" ] || [ "${PREVIOUS_SHA}" = "0000000000000000000000000000000000000000" ]; then
-            echo "no previous commit; skipping"; exit 0
+            echo "no previous commit on this ref; nothing to roll back to"; exit 0
           fi
           previous="${PREVIOUS_SHA:0:7}"
+          echo "redeploying ${IMAGE}:sha-${previous}"
           docker pull "${IMAGE}:sha-${previous}"
           APP_IMAGE="${IMAGE}:sha-${previous}" JWT_SECRET=deploy-time-secret-that-is-long-enough-0001 \
             POSTGRES_PASSWORD=ci-postgres-password APP_PORT=8000 \
             docker compose -f compose.yaml up -d --wait
           python3 scripts/smoke.py --base-url http://127.0.0.1:8000 --skip-spa
+
+      - name: report the rollback rehearsal
+        if: always() && steps.rollback.outcome != 'skipped'
+        run: |
+          if [ "${{ steps.rollback.outcome }}" = "success" ]; then
+            echo "::notice::rollback rehearsal passed: the previous sha- tag redeployed and served traffic"
+          else
+            echo "::warning::rollback rehearsal did NOT complete - check the previous sha- tag exists in GHCR"
+          fi
 
       - name: tear down
         if: always()
@@ -369,6 +386,7 @@ jobs:
           name: ${{ matrix.artifact }}
           path: |
             desktop/release/*.exe
+            desktop/release/*.zip
             desktop/release/*.AppImage
             desktop/release/*.deb
           if-no-files-found: error
@@ -394,13 +412,15 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: unpack the portable build
+      - name: unpack the built app
         shell: pwsh
         run: |
-          $portable = Get-ChildItem dist -Filter 'QuickLaunch-Portable-*.exe' | Select-Object -First 1
-          if (-not $portable) { throw 'no portable exe in the artifact' }
-          # The portable exe is a self-extracting 7z archive; -o extracts it.
-          & $portable.FullName -o"$PWD\app" -y | Out-Null
+          # The zip target is a plain archive of the packaged app directory.
+          # Extracting a self-extracting installer would work too, but it
+          # launches the app as a side effect - not what a CI step wants.
+          $zip = Get-ChildItem dist -Filter 'QuickLaunch-*-x64.zip' | Select-Object -First 1
+          if (-not $zip) { throw "no desktop zip in the artifact: $((Get-ChildItem dist).Name -join ', ')" }
+          Expand-Archive -Path $zip.FullName -DestinationPath "$PWD\app" -Force
           Get-ChildItem "$PWD\app" | Select-Object -First 10 Name
 
       - name: stub the API the shell will call
@@ -467,6 +487,12 @@ jobs:
       - name: install capacitor toolchain
         working-directory: mobile
         run: npm ci --no-audit --no-fund
+
+      # verify_apk.py is plain stdlib Python, but the runner only guarantees
+      # `python3`; ask setup-python for a known interpreter instead of hoping.
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
 
       - name: build web bundle for the WebView
         working-directory: web
