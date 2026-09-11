@@ -128,9 +128,7 @@ def check_journey(base_url: str) -> str | None:
     password = "smoke-test-password"
     user = Session(base_url)
 
-    status, body, _ = user.request(
-        "POST", "/api/auth/register", {"email": email, "password": password}
-    )
+    status, body, _ = user.request("POST", "/api/auth/register", {"email": email, "password": password})
     record("register returns 201", status == 201, f"status={status} body={body}")
     if status != 201:
         return None
@@ -143,11 +141,7 @@ def check_journey(base_url: str) -> str | None:
     )
 
     status, created, _ = user.request("POST", "/api/todos", {"title": "smoke: created"})
-    ok = (
-        status == 201
-        and isinstance(created, dict)
-        and created.get("title") == "smoke: created"
-    )
+    ok = status == 201 and isinstance(created, dict) and created.get("title") == "smoke: created"
     record("create todo returns 201", ok, f"status={status} body={created}")
     if not ok or not isinstance(created, dict):
         return None
@@ -156,9 +150,7 @@ def check_journey(base_url: str) -> str | None:
     status, listed, _ = user.request("GET", "/api/todos")
     record(
         "created todo is listed",
-        status == 200
-        and isinstance(listed, list)
-        and [t["id"] for t in listed] == [todo_id],
+        status == 200 and isinstance(listed, list) and [t["id"] for t in listed] == [todo_id],
         f"status={status}",
     )
 
@@ -183,9 +175,7 @@ def check_journey(base_url: str) -> str | None:
     record("logout returns 204", status == 204, f"status={status}")
 
     status, body, _ = user.request("GET", "/api/todos")
-    record(
-        "session is dead after logout", status == 401, f"status={status} body={body}"
-    )
+    record("session is dead after logout", status == 401, f"status={status} body={body}")
 
     return email
 
@@ -213,9 +203,7 @@ def check_isolation(base_url: str) -> None:
     todo_id = created["id"]
 
     status, body, _ = bob.request("PATCH", f"/api/todos/{todo_id}", {"done": True})
-    record(
-        "isolation: foreign PATCH is 404", status == 404, f"status={status} body={body}"
-    )
+    record("isolation: foreign PATCH is 404", status == 404, f"status={status} body={body}")
 
     status, _, _ = bob.request("DELETE", f"/api/todos/{todo_id}")
     record("isolation: foreign DELETE is 404", status == 404, f"status={status}")
@@ -246,9 +234,7 @@ def check_login(base_url: str, email: str | None) -> None:
         f"status={status} body={body}",
     )
 
-    status, body, _ = user.request(
-        "POST", "/api/auth/login", {"email": email, "password": "wrong-password"}
-    )
+    status, body, _ = user.request("POST", "/api/auth/login", {"email": email, "password": "wrong-password"})
     record("wrong password is rejected", status == 401, f"status={status}")
 
 

@@ -506,15 +506,7 @@ jobs:
         working-directory: mobile
         run: |
           apk="$(find android/app/build/outputs/apk/debug -name '*.apk' | head -n1)"
-          ls -lh "$apk"
-          # Binary manifest check: proves the shell packaged the right app id.
-          aapt2 dump badging "$apk" | head -n 5
-          aapt2 dump badging "$apk" | grep -q "package: name='dev.quicklaunch.app'" \
-            || { echo "unexpected package id"; exit 1; }
-          # ...and that the web bundle really is inside the apk.
-          unzip -l "$apk" | grep -q "assets/public/index.html" \
-            || { echo "web bundle missing from the apk"; exit 1; }
-          echo "apk verified"
+          python ../scripts/verify_apk.py "$apk"
 
       - uses: actions/upload-artifact@v7
         with:

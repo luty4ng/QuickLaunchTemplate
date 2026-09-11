@@ -1,0 +1,15 @@
+# One ruff config for the whole repository.
+#
+# This file exists because ruff resolves its configuration relative to the file
+# being analysed, so `ruff check ../scripts` from backend/ and `ruff check .`
+# from the root used to disagree - which is exactly how a green local run turns
+# into a red pipeline.
+line-length = 110
+target-version = "py311"
+
+[lint]
+select = ["E", "F", "I", "B", "UP", "SIM", "C4", "ASYNC"]
+ignore = ["B008"]  # FastAPI's Depends()/Cookie() defaults are the documented idiom
+
+[lint.per-file-ignores]
+"backend/migrations/versions/*.py" = ["E501"]
