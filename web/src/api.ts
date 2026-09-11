@@ -125,6 +125,9 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 export const api = {
   health: () => request<{ status: string; database: string; version: string }>('/api/health'),
 
+  // GATE CHECK: deliberate type error. `number` is not assignable to `string`.
+  label: (): string => 42,
+
   me: () => request<User>('/api/auth/me'),
   register: (email: string, password: string) =>
     request<User>('/api/auth/register', { method: 'POST', body: JSON.stringify({ email, password }) }),
