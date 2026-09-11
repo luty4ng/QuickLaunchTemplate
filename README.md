@@ -113,14 +113,29 @@ docker compose up -d --wait
 
 ## Verification
 
-The pipeline is only worth trusting if it can go red. Three deliberate
-regressions are committed and reverted as part of the acceptance run (see
-`report/`): a type error, a failing assertion, and a broken isolation check.
-Each one must turn the pipeline red at the right step.
+The pipeline is only worth trusting if it can go red, so three deliberate
+regressions were pushed as pull requests and then reverted:
+
+| injected fault | caught by | run |
+|---|---|---|
+| `(): string => 42` in the web client | `verify-web` → typecheck | [#34652578016](https://github.com/luty4ng/QuickLaunchTemplate/actions/runs/34652578016) |
+| an unused import in the backend | `verify-backend` → lint | [#34652632864](https://github.com/luty4ng/QuickLaunchTemplate/actions/runs/34652632864) |
+| tenant isolation removed from the todo handlers | `verify-backend` → integration tests | [#34652715044](https://github.com/luty4ng/QuickLaunchTemplate/actions/runs/34652715044) |
+
+In every case the pull request was blocked and no downstream job (image, desktop,
+Android, release) ran.
+
+The last one is the interesting one: 41 of 45 tests still passed. Only the four
+cross-tenant cases in `tests/integration/test_isolation.py` noticed, which is why
+they live in their own file with their own name.
+
+The fully green run is [#34651815693](https://github.com/luty4ng/QuickLaunchTemplate/actions/runs/34651815693)
+(10 jobs, 5.0 min) and its artifacts are on the
+[build-12 release](https://github.com/luty4ng/QuickLaunchTemplate/releases/tag/build-12).
 
 ## Documentation
 
 - `DESIGN.md` — the original design note for this demo (v1 draft, Next.js-era;
   superseded by the implementation, kept for provenance).
-- `report/` — the delivery report: what was built, how the pipeline works, and
-  the evidence from real runs.
+- `report/REPORT.md` — the delivery report: what was built, how the pipeline
+  works, measured timings, and the evidence from real runs.
