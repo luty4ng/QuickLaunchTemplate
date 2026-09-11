@@ -12,3 +12,7 @@ createRoot(container).render(
     <App />
   </StrictMode>,
 )
+
+// Lets the desktop shell (and any future mobile wrapper) tell "the bundle
+// loaded and React mounted" apart from "the WebView is showing a blank page".
+container.dataset.appReady = 'true'

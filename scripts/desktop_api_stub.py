@@ -1,0 +1,56 @@
+#!/usr/bin/env python
+"""A stub of the QuickLaunch API for the desktop self-test.
+
+The `desktop-self-test` job runs on a Windows runner without Docker, so it
+cannot bring up Postgres. This stands in for the API and answers exactly the
+requests the shell makes on boot:
+
+    GET /api/health  -> 200 {"status": "ok", ...}
+    GET /api/auth/me -> 401 {"error": {...}}   (the normal signed-out state)
+
+It also carries the CORS headers, because the desktop renderer calls it from a
+file:// origin - which is precisely the cross-origin path a packaged desktop app
+depends on. 200 means "the shell is wired correctly"; the point is not to test
+the API (the backend job does that against real Postgres).
+"""
+
+from __future__ import annotations
+
+import json
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+PORT = 8123
+
+
+class Stub(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def _send(self, status: int, payload: dict) -> None:
+        body = json.dumps(payload).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Headers", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET,POST,PATCH,DELETE,OPTIONS")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_OPTIONS(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+        self._send(204, {})
+
+    def do_GET(self) -> None:  # noqa: N802
+        if self.path.startswith("/api/health"):
+            self._send(200, {"status": "ok", "database": "stub", "version": "1.0.0"})
+        elif self.path.startswith("/api/auth/me") or self.path.startswith("/api/todos"):
+            self._send(401, {"error": {"code": "unauthenticated", "message": "Sign in to continue."}})
+        else:
+            self._send(404, {"error": {"code": "not_found", "message": "stub"}})
+
+    def log_message(self, *_: object) -> None:
+        pass
+
+
+if __name__ == "__main__":
+    print(f"stub API on http://127.0.0.1:{PORT}", flush=True)
+    ThreadingHTTPServer(("127.0.0.1", PORT), Stub).serve_forever()

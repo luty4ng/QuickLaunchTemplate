@@ -350,6 +350,63 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  # Packaging a desktop app is not evidence that it runs. This job installs the
+  # artifact on a real Windows machine, boots it headlessly, and lets it call the
+  # API from inside the renderer.
+  desktop-self-test:
+    name: desktop / self-test the packaged app (windows)
+    runs-on: windows-latest
+    needs: desktop
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: desktop
+          path: dist
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: unpack the portable build
+        shell: pwsh
+        run: |
+          $portable = Get-ChildItem dist -Filter 'QuickLaunch-Portable-*.exe' | Select-Object -First 1
+          if (-not $portable) { throw 'no portable exe in the artifact' }
+          # The portable exe is a self-extracting 7z archive; -o extracts it.
+          & $portable.FullName -o"$PWD\app" -y | Out-Null
+          Get-ChildItem "$PWD\app" | Select-Object -First 10 Name
+
+      - name: stub the API the shell will call
+        shell: pwsh
+        run: |
+          Start-Process -FilePath python -ArgumentList 'scripts/desktop_api_stub.py' -NoNewWindow
+          # Wait for it rather than guessing.
+          for ($i = 0; $i -lt 30; $i++) {
+            try { Invoke-WebRequest -Uri 'http://127.0.0.1:8123/api/health' -UseBasicParsing | Out-Null; break }
+            catch { Start-Sleep -Milliseconds 500 }
+          }
+          (Invoke-WebRequest -Uri 'http://127.0.0.1:8123/api/health' -UseBasicParsing).Content
+
+      - name: run the packaged app's self test
+        shell: pwsh
+        env:
+          QL_API_BASE: http://127.0.0.1:8123
+        run: |
+          $exe = Get-ChildItem "$PWD\app" -Filter 'QuickLaunch.exe' -Recurse | Select-Object -First 1
+          if (-not $exe) { throw 'QuickLaunch.exe not found after extraction' }
+          Write-Host "running $($exe.FullName)"
+          $output = & $exe.FullName --ql-self-test 2>&1 | Out-String
+          Write-Host $output
+          $line = ($output -split "`n" | Where-Object { $_ -like 'QL_SELF_TEST*' } | Select-Object -First 1)
+          if (-not $line) { throw "the app never reported a self-test result" }
+          $json = $line.Substring('QL_SELF_TEST '.Length) | ConvertFrom-Json
+          if (-not $json.ok) { throw "self test failed: $($line)" }
+          Write-Host "desktop artifact verified:" $line
+          $global:LASTEXITCODE = 0
+
   android:
     name: android / build apk
     runs-on: ubuntu-latest
@@ -417,6 +474,20 @@ jobs:
         working-directory: mobile
         run: ls -lh android/app/build/outputs/apk/debug/
 
+      - name: verify the apk actually contains our app
+        working-directory: mobile
+        run: |
+          apk="$(find android/app/build/outputs/apk/debug -name '*.apk' | head -n1)"
+          ls -lh "$apk"
+          # Binary manifest check: proves the shell packaged the right app id.
+          aapt2 dump badging "$apk" | head -n 5
+          aapt2 dump badging "$apk" | grep -q "package: name='dev.quicklaunch.app'" \
+            || { echo "unexpected package id"; exit 1; }
+          # ...and that the web bundle really is inside the apk.
+          unzip -l "$apk" | grep -q "assets/public/index.html" \
+            || { echo "web bundle missing from the apk"; exit 1; }
+          echo "apk verified"
+
       - uses: actions/upload-artifact@v7
         with:
           name: android-apk
@@ -430,7 +501,7 @@ jobs:
   release:
     name: release / publish build
     runs-on: ubuntu-latest
-    needs: [docker, deploy, desktop, android]
+    needs: [docker, deploy, desktop, desktop-self-test, android]
     if: |
       always()
       && !cancelled()
