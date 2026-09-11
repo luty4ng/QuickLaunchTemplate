@@ -23,12 +23,34 @@
 
 | 运行 | 结果 | 说明 |
 |---|---|---|
-| [#34651815693](https://github.com/luty4ng/QuickLaunchTemplate/actions/runs/34651815693) | ✅ 全绿 | 首个完整成功的端到端管线，产出镜像 + 三端产物 + Release |
+| [#34651815693](https://github.com/luty4ng/QuickLaunchTemplate/actions/runs/34651815693) | ✅ 全绿 | 首个完整成功的端到端管线（10 个 job 全部真实执行），产出镜像 + 三端产物 + Release |
+| [#34655397546](https://github.com/luty4ng/QuickLaunchTemplate/actions/runs/34655397546) | ✅ 全绿 | 最终状态；同时验证了变更检测（后端未改 → 跳过）与产物复用 |
 | [#34652578016](https://github.com/luty4ng/QuickLaunchTemplate/actions/runs/34652578016) | ❌ 按预期变红 | 故意塞类型错误 → `verify-web / typecheck` 拦住 |
 | [#34652632864](https://github.com/luty4ng/QuickLaunchTemplate/actions/runs/34652632864) | ❌ 按预期变红 | 故意塞无用 import → `verify-backend / lint` 拦住 |
 | [#34652715044](https://github.com/luty4ng/QuickLaunchTemplate/actions/runs/34652715044) | ❌ 按预期变红 | 故意破坏租户隔离 → `verify-backend / integration` 拦住 |
 
+最新 Release：[build-23](https://github.com/luty4ng/QuickLaunchTemplate/releases/tag/build-23)。
+
 > 「一条永远绿的管线，和不存在的管线可信度一样。」——所以上面三条反向验证是本次交付的重点之一。
+
+### 1.1 调通过程本身就是最好的证据
+
+这条管线不是一次写对的，它红过 **12 次**，每一次红都暴露一个只有真实运行才会出现的问题，
+而每一次修复都留在 git 历史里（`git log` 可逐条复核）。值得记录的几条：
+
+| 现象 | 根因 | 修复 |
+|---|---|---|
+| `docker save` 报 "repository name must be lowercase" | `github.repository` 是 `QuickLaunchTemplate`，GHCR 只接受小写 | 镜像名改用 owner + 小写仓库名 |
+| 桌面端 `spawn wine ENOENT` | electron-builder 在 Linux 上靠 Wine 出 Windows 安装包 | 改成 matrix：哪个系统出哪个系统的安装包 |
+| `Could not find the web assets directory: ./www` | Capacitor 拷贝的是 `webDir`，而产物建到了 `web/dist` | 用 `VITE_OUT_DIR` 直接建到 `mobile/www` |
+| 容器一直 `starting`，健康检查不过 | `docker compose up --wait` 只保证「在跑」，而 docker 健康检查有自己的 10s 周期 | 健康判定改成显式轮询 |
+| 打包后的桌面应用在 CI 上白屏 | Chromium 把 `file://` 当不透明源，模块脚本不执行 | 注册 `app://` 标准协议托管前端产物 |
+| 自检卡住直到超时 | `app.disableHardwareAcceleration()` 写在 `whenReady()` 里会抛异常，且被 Promise 吞掉，窗口根本没建 | 移到 `app.whenReady()` 之前 |
+| `net::ERR_CONNECTION_REFUSED` | Windows 上 step 结束时其进程树被回收，桩服务已死 | 用 WMI 启动桩服务，脱离当前进程树 |
+| 文档提交也把桌面端构建搞挂了 | 跳过的 job 不会产出 artifact，而桌面端硬依赖它 | 下载改为尽力而为 + 缺就自己构建 |
+| 镜像里的前端用了绝对路径 `/assets/` | 我自己的 `.gitignore` 里一条 `.env` 把 `web/.env` 悄悄排除了 | 默认值写进 `vite.config.ts`（忽略规则拿不走），并加断言防回归 |
+
+最后两条尤其说明问题：**如果只跑绿、不做反向验证、不以真实产物为准，这两类缺陷会一路带到用户面前。**
 
 ---
 
@@ -241,9 +263,10 @@ CI 与 CD 放在**同一个文件**里用 `needs:` 串联——拆成两个文�
 | **CI 门禁（后端 job）** | **38 s** | run #34651815693 |
 | **CI 门禁（前端 job）** | **19 s** | 同上 |
 | CD（构建推送镜像 + 起栈 + 探活 + 冒烟 + 回滚演练） | **46 s + 96 s = 142 s** | 同上，**满足 < 5 分钟基线** |
-| 完整管线（含三端打包 + Release） | **5.0 min** | 同上 |
-| 失败反馈速度 | 后端 lint 28 s 变红，下游全部 skipped | run #34652632864 |
+| 完整管线（含三端打包 + Release） | **5.0 min** | run #34655397546 |
+| 失败反馈速度 | 28-32 s 变红，下游全部 skipped | run #34652632864 |
 | 镜像 | `ghcr.io/luty4ng/quicklaunchtemplate`，公开，tag `sha-<commit>` + `latest` | GHCR |
+| 变更检测 | 只改文档/脚本时后端 job 自动跳过 | run #34655397546 |
 
 各 job 耗时明细（run #34651815693）：changes 5s、web 19s、backend 38s、
 desktop(windows) 201s、desktop(linux) 92s、android 125s、docker 46s、deploy 96s、
@@ -294,18 +317,21 @@ desktop-self-test 30s、release 26s。
 ## 10. 复核指引（想自己验证的话）
 
 ```bash
-# 1. 看最后一次全绿的管线（10 个 job）
-open https://github.com/luty4ng/QuickLaunchTemplate/actions/runs/34651815693
+# 1. 看最后一次全绿的管线（10 个 job，5.0 min）
+open https://github.com/luty4ng/QuickLaunchTemplate/actions/runs/34655397546
 
 # 2. 看三端产物
-open https://github.com/luty4ng/QuickLaunchTemplate/releases/tag/build-12
+open https://github.com/luty4ng/QuickLaunchTemplate/releases/tag/build-23
 
-# 3. 看门禁能变红（三条反向验证，均已关闭 PR 但运行记录永久保留）
+# 3. 看镜像（公开可拉）
+docker pull ghcr.io/luty4ng/quicklaunchtemplate:latest
+
+# 4. 看门禁能变红（三条反向验证，已关闭 PR，运行记录永久保留）
 open https://github.com/luty4ng/QuickLaunchTemplate/actions/runs/34652578016   # 类型错误
 open https://github.com/luty4ng/QuickLaunchTemplate/actions/runs/34652632864   # lint 错误
 open https://github.com/luty4ng/QuickLaunchTemplate/actions/runs/34652715044   # 越权
 
-# 4. 本机跑一遍
+# 5. 本机跑一遍（无需 Docker）
 python -m venv .venv && .venv/Scripts/pip install -r backend/requirements-dev.txt
 cd web && npm ci && npm run build && cd ..
 cd backend && DATABASE_URL=sqlite+aiosqlite:///./data/dev.db \
@@ -313,3 +339,6 @@ cd backend && DATABASE_URL=sqlite+aiosqlite:///./data/dev.db \
   WEB_DIST=../web/dist ../.venv/Scripts/python -m uvicorn app.main:app --port 8000
 python scripts/smoke.py --base-url http://127.0.0.1:8000
 ```
+
+> 交付状态：**完成**。最后一次提交为 `96afd35`，main 分支干净（无未提交改动、
+> 无遗留分支、无开启的 PR），全部实验分支已删除，未对任何其他仓库发起写操作。
