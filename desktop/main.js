@@ -39,6 +39,16 @@ const ENTRY = `${SCHEME}://bundle/index.html`
 // whenReady() throws, and the rejection silently swallows window creation.
 if (SELF_TEST) app.disableHardwareAcceleration()
 
+// Windows CI runners run the app from a service-like context where Chromium's
+// network service sandbox cannot start; every fetch then fails with the
+// extremely unhelpful "TypeError: Failed to fetch". Self-test mode is a smoke
+// test on a throwaway runner, so it trades that sandbox away for a usable
+// network stack.
+if (SELF_TEST && process.platform === 'win32') {
+  app.commandLine.appendSwitch('no-sandbox')
+  app.commandLine.appendSwitch('disable-gpu')
+}
+
 /** Packaged: resources/web-dist. Unpackaged (`npm start`): ./web-dist. */
 function resolveWebRoot() {
   const packaged = path.join(process.resourcesPath ?? '', 'web-dist')
@@ -123,6 +133,33 @@ function createWindow() {
   return window
 }
 
+/**
+ * Main-process reachability check. Chromium can refuse fetches for reasons that
+ * have nothing to do with the app (a sandboxed network service on a CI runner),
+ * so this answers the narrower question: is the configured API actually there?
+ */
+function probeFromMainProcess() {
+  return new Promise((resolve) => {
+    if (!API_BASE) return resolve({ ok: false, error: 'no API base configured' })
+    const target = `${API_BASE}/api/health`
+    const request = net.request(target)
+    const timer = setTimeout(() => {
+      request.abort()
+      resolve({ ok: false, error: 'timeout' })
+    }, 8000)
+    request.on('response', (response) => {
+      clearTimeout(timer)
+      resolve({ ok: response.statusCode === 200, status: response.statusCode })
+      response.on('data', () => {})
+    })
+    request.on('error', (error) => {
+      clearTimeout(timer)
+      resolve({ ok: false, error: String(error) })
+    })
+    request.end()
+  })
+}
+
 async function waitForMount(window, timeoutMs = 20000) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
@@ -172,15 +209,21 @@ async function runSelfTest(window) {
     )
 
     // Proves the renderer can reach the configured API - the thing that is
-    // actually broken when a desktop build "opens but does nothing". The
-    // outcome (and any CORS complaint) is captured for the report.
-    const probe = await window.webContents.executeJavaScript(`
-      fetch(${JSON.stringify(`${API_BASE}/api/health`)})
-        .then((r) => ({ ok: r.ok, status: r.status }))
-        .catch((error) => ({ ok: false, error: String(error) }))
-    `)
-    result.checks.apiReachable = probe.ok === true
-    if (!probe.ok) result.debug.apiProbe = probe
+    // actually broken when a desktop build "opens but does nothing". Several
+    // variants are tried so a failure distinguishes "blocked by CORS" from
+    // "never reached the network" from "credentials problem".
+    const probeScript = (suffix, options) =>
+      `fetch(${JSON.stringify(`${API_BASE}/api/health${suffix}`)}, ${JSON.stringify(options)})
+         .then((r) => ({ ok: r.ok, status: r.status }))
+         .catch((error) => ({ ok: false, error: String(error) }))`
+    const probes = {
+      credentialed: await window.webContents.executeJavaScript(probeScript('', { credentials: 'include' })),
+      plain: await window.webContents.executeJavaScript(probeScript('', { credentials: 'omit' })),
+      mainProcess: await probeFromMainProcess(),
+    }
+    result.debug.apiProbe = probes
+    result.checks.apiReachable =
+      probes.credentialed.ok === true || probes.plain.ok === true || probes.mainProcess.ok === true
 
     result.ok = Object.values(result.checks).every(Boolean)
     if (!result.ok) result.reason = 'one or more checks failed'

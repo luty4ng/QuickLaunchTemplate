@@ -73,8 +73,11 @@ class Stub(BaseHTTPRequestHandler):
         else:
             self._send(404, {"error": {"code": "not_found", "message": "stub"}})
 
-    def log_message(self, *_: object) -> None:
-        pass
+    def log_message(self, fmt: str, *args: object) -> None:
+        # One line per request, so a CI log shows whether the app's fetch ever
+        # reached the server at all - the difference between "never arrived" and
+        # "arrived and was rejected by CORS policy".
+        print(f"stub: {self.command} {self.path} origin={self.headers.get('Origin')!r}", flush=True)
 
 
 if __name__ == "__main__":
