@@ -1,35 +1,71 @@
 // Minimal, security-first Electron shell.
 //
-// The renderer is the exact same bundle the web deployment serves. Two things
-// differ, and both are handled here rather than in the UI:
-//   * it is loaded from file://, so the app reads its API origin from
-//     `QL_API_BASE` (build time) or the in-app "Server" setting (runtime);
+// The renderer is the exact same bundle the web deployment serves. Three things
+// differ from the browser case, and all of them are handled here rather than in
+// the UI:
+//   * the bundle is served over a custom `app://` protocol instead of file://.
+//     Chromium treats file:// as an opaque origin and treats ES modules and
+//     fetch() from it as cross-origin, which shows up as "the window opens and
+//     the page renders nothing" - exactly what the packaged app did on a CI
+//     runner. A registered protocol makes the bundle a normal origin.
+//   * the API origin comes from `QL_API_BASE` (build time) or the in-app
+//     "Server" setting (runtime);
 //   * it gets no Node integration - only a tiny preload surface.
 //
 // `--ql-self-test` turns the app into its own integration test: boot, wait for
-// React to mount, call the API from inside the renderer, print one JSON line and
+// React to mount, call the API from inside the renderer, write a JSON report and
 // exit. That is how CI proves the packaged artifact works, not just that it
 // built. See the `desktop-self-test` job in .github/workflows/pipeline.yml.
 
-const { app, BrowserWindow, shell, Menu } = require('electron')
+const { app, BrowserWindow, protocol, net, shell, Menu } = require('electron')
 const path = require('node:path')
 const fs = require('node:fs')
+const { pathToFileURL } = require('node:url')
 
-const WEB_ROOT = path.join(process.resourcesPath ?? '', 'web-dist')
 const DEV_URL = process.env.QL_DEV_URL
 const API_BASE = process.env.QL_API_BASE ?? ''
 const SELF_TEST = process.argv.includes('--ql-self-test')
 // CI passes an absolute path: a GUI process's working directory is not a
 // reliable place to look for its output afterwards.
-const SELF_TEST_REPORT = (process.argv.find((value) => value.startsWith('--ql-self-test-report=')) ?? '').slice(
-  '--ql-self-test-report='.length,
-)
+const SELF_TEST_REPORT = (
+  process.argv.find((value) => value.startsWith('--ql-self-test-report=')) ?? ''
+).slice('--ql-self-test-report='.length)
 
+const SCHEME = 'app'
+const ENTRY = `${SCHEME}://bundle/index.html`
+
+// Headless CI has no GPU and Electron's GPU process can stall the renderer
+// there. This must happen before the app is ready - calling it inside
+// whenReady() throws, and the rejection silently swallows window creation.
+if (SELF_TEST) app.disableHardwareAcceleration()
+
+/** Packaged: resources/web-dist. Unpackaged (`npm start`): ./web-dist. */
 function resolveWebRoot() {
-  // Packaged: resources/web-dist. Unpackaged (`npm start`): ./web-dist.
-  const packaged = path.join(WEB_ROOT, 'index.html')
-  if (fs.existsSync(packaged)) return WEB_ROOT
+  const packaged = path.join(process.resourcesPath ?? '', 'web-dist')
+  if (fs.existsSync(path.join(packaged, 'index.html'))) return packaged
   return path.join(__dirname, 'web-dist')
+}
+
+// Registered as a standard scheme so the renderer treats it as a real origin.
+protocol.registerSchemesAsPrivileged([
+  { scheme: SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true } },
+])
+
+function registerBundleProtocol() {
+  const root = resolveWebRoot()
+  protocol.handle(SCHEME, (request) => {
+    const { pathname } = new URL(request.url)
+    const relative = decodeURIComponent(pathname).replace(/^\/+/, '') || 'index.html'
+    const target = path.join(root, relative)
+    // Never serve anything outside the bundle directory.
+    if (!target.startsWith(root)) {
+      return new Response('forbidden', { status: 403 })
+    }
+    if (!fs.existsSync(target)) {
+      return new Response('not found', { status: 404 })
+    }
+    return net.fetch(pathToFileURL(target).toString())
+  })
 }
 
 function createWindow() {
@@ -56,18 +92,17 @@ function createWindow() {
     return { action: 'deny' }
   })
 
-  // A blank page or a dead preload must fail the build, not show up as a
-  // white window in front of a user.
+  // A blank page or a dead preload must fail the build, not show up as a white
+  // window in front of a user.
   window.webContents.on('render-process-gone', (_event, details) => {
     if (SELF_TEST) finish({ ok: false, reason: `renderer gone: ${details.reason}` })
   })
-  window.webContents.on('did-fail-load', (_event, code, description) => {
+  window.webContents.on('did-fail-load', (_event, code, description, url) => {
+    console.log(`QL_LOAD_FAILED ${code} ${description} ${url}`)
     if (SELF_TEST) finish({ ok: false, reason: `load failed ${code}: ${description}` })
   })
-
-  const loaded = DEV_URL ? window.loadURL(DEV_URL) : window.loadFile(path.join(resolveWebRoot(), 'index.html'))
-  loaded.catch((error) => {
-    if (SELF_TEST) finish({ ok: false, reason: `could not load the bundle: ${error.message}` })
+  window.webContents.on('did-fail-provisional-load', (_event, code, description, url) => {
+    console.log(`QL_PROVISIONAL_FAILED ${code} ${description} ${url}`)
   })
 
   if (SELF_TEST) {
@@ -76,11 +111,15 @@ function createWindow() {
       console.log(`QL_CONSOLE ${event.level}: ${event.message}`)
     })
     window.webContents.on('did-finish-load', () => console.log('QL_LOADED did-finish-load'))
-    window.webContents.on('did-fail-load', (_event, code, description, url) => {
-      console.log(`QL_LOAD_FAILED ${code} ${description} ${url}`)
-    })
-    void runSelfTest(window)
+    window.webContents.on('did-fail-load', () => console.log('QL_LOAD_FAILED'))
   }
+
+  const loaded = DEV_URL ? window.loadURL(DEV_URL) : window.loadURL(ENTRY)
+  loaded.catch((error) => {
+    if (SELF_TEST) finish({ ok: false, reason: `could not load the bundle: ${error.message}` })
+  })
+
+  if (SELF_TEST) void runSelfTest(window)
   return window
 }
 
@@ -113,9 +152,17 @@ async function runSelfTest(window) {
 
     result.checks.bundleMounted = await waitForMount(window)
     if (!result.checks.bundleMounted) {
-      result.debug.location = await window.webContents
-        .executeJavaScript('location.href')
-        .catch((error) => `unavailable: ${error.message}`)
+      const probe = await window.webContents
+        .executeJavaScript(
+          `({
+             href: location.href,
+             scripts: [...document.querySelectorAll('script')].map((s) => s.getAttribute('src')),
+             rootHtml: (document.getElementById('root') || {}).innerHTML ?? null,
+             bodyLength: document.body ? document.body.innerHTML.length : -1,
+           })`,
+        )
+        .catch((error) => ({ error: error.message }))
+      result.debug.probe = probe
       return finish({ ...result, reason: 'React never mounted' })
     }
 
@@ -162,13 +209,9 @@ function finish(result) {
   setTimeout(() => process.exit(result.ok ? 0 : 1), 3000)
 }
 
-// Headless CI has no GPU and Electron's GPU process can stall the renderer
-// there. This must happen before the app is ready - calling it inside
-// whenReady() throws, and the rejection silently swallows window creation.
-if (SELF_TEST) app.disableHardwareAcceleration()
-
 app.whenReady().then(() => {
   Menu.setApplicationMenu(null)
+  registerBundleProtocol()
   createWindow()
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()

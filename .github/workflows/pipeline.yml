@@ -460,6 +460,8 @@ jobs:
 
       - name: stub the API the shell will call
         shell: pwsh
+        env:
+          CORS_ORIGINS: 'app://bundle,http://localhost,https://localhost'
         run: |
           Start-Process -FilePath python -ArgumentList 'scripts/desktop_api_stub.py' -NoNewWindow
           # Wait for it rather than guessing.

@@ -8,10 +8,13 @@ requests the shell makes on boot:
     GET /api/health  -> 200 {"status": "ok", ...}
     GET /api/auth/me -> 401 {"error": {...}}   (the normal signed-out state)
 
-It also carries the CORS headers, because the desktop renderer calls it from a
-file:// origin - which is precisely the cross-origin path a packaged desktop app
-depends on. 200 means "the shell is wired correctly"; the point is not to test
-the API (the backend job does that against real Postgres).
+It also carries the CORS headers, because the desktop renderer calls it from the
+`app://bundle` origin - precisely the cross-origin path a packaged desktop app
+depends on. Credentialed requests must never be answered with a `*` wildcard, so
+the caller's origin is echoed back when it is one we know.
+
+200 here means "the shell is wired correctly"; the point is not to test the API
+(the backend job does that against real Postgres).
 """
 
 from __future__ import annotations
@@ -20,24 +23,35 @@ import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PORT = 8123
+ALLOWED_ORIGINS = {"app://bundle", "http://localhost", "https://localhost"}
 
 
 class Stub(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
+
+    def _cors(self) -> None:
+        origin = self.headers.get("Origin", "")
+        if origin in ALLOWED_ORIGINS:
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Access-Control-Allow-Credentials", "true")
+            self.send_header("Vary", "Origin")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Methods", "GET,POST,PATCH,DELETE,OPTIONS")
 
     def _send(self, status: int, payload: dict) -> None:
         body = json.dumps(payload).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Headers", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET,POST,PATCH,DELETE,OPTIONS")
+        self._cors()
         self.end_headers()
         self.wfile.write(body)
 
     def do_OPTIONS(self) -> None:
-        self._send(204, {})
+        self.send_response(204)
+        self._cors()
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def do_GET(self) -> None:
         if self.path.startswith("/api/health"):
