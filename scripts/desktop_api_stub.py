@@ -23,7 +23,9 @@ import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PORT = 8123
-ALLOWED_ORIGINS = {"app://bundle", "http://localhost", "https://localhost"}
+# A custom-scheme page can send `Origin: null`, and Electron's app:// scheme
+# sends the expected origin on other paths. Whatever arrives is echoed back.
+ALLOWED_ORIGINS = {"app://bundle", "null", "http://localhost", "https://localhost"}
 
 
 class Stub(BaseHTTPRequestHandler):
@@ -31,7 +33,9 @@ class Stub(BaseHTTPRequestHandler):
 
     def _cors(self) -> None:
         origin = self.headers.get("Origin", "")
-        if origin in ALLOWED_ORIGINS:
+        # `*` is illegal once the request carries credentials (the session
+        # cookie), so the caller's own origin must be echoed back.
+        if origin:
             self.send_header("Access-Control-Allow-Origin", origin)
             self.send_header("Access-Control-Allow-Credentials", "true")
             self.send_header("Vary", "Origin")

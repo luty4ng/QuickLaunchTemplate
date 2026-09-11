@@ -172,12 +172,15 @@ async function runSelfTest(window) {
     )
 
     // Proves the renderer can reach the configured API - the thing that is
-    // actually broken when a desktop build "opens but does nothing".
-    result.checks.apiReachable = await window.webContents.executeJavaScript(`
+    // actually broken when a desktop build "opens but does nothing". The
+    // outcome (and any CORS complaint) is captured for the report.
+    const probe = await window.webContents.executeJavaScript(`
       fetch(${JSON.stringify(`${API_BASE}/api/health`)})
-        .then((r) => r.ok)
-        .catch(() => false)
+        .then((r) => ({ ok: r.ok, status: r.status }))
+        .catch((error) => ({ ok: false, error: String(error) }))
     `)
+    result.checks.apiReachable = probe.ok === true
+    if (!probe.ok) result.debug.apiProbe = probe
 
     result.ok = Object.values(result.checks).every(Boolean)
     if (!result.ok) result.reason = 'one or more checks failed'
