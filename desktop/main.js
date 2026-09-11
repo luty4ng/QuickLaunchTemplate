@@ -19,6 +19,11 @@ const WEB_ROOT = path.join(process.resourcesPath ?? '', 'web-dist')
 const DEV_URL = process.env.QL_DEV_URL
 const API_BASE = process.env.QL_API_BASE ?? ''
 const SELF_TEST = process.argv.includes('--ql-self-test')
+// CI passes an absolute path: a GUI process's working directory is not a
+// reliable place to look for its output afterwards.
+const SELF_TEST_REPORT = (process.argv.find((value) => value.startsWith('--ql-self-test-report=')) ?? '').slice(
+  '--ql-self-test-report='.length,
+)
 
 function resolveWebRoot() {
   // Packaged: resources/web-dist. Unpackaged (`npm start`): ./web-dist.
@@ -139,16 +144,31 @@ let finished = false
 function finish(result) {
   if (finished) return
   finished = true
+  // The result goes to a file as well as stdout: a GUI process on a headless CI
+  // runner is not always waited on, and a truncated pipe must not look like a
+  // failed self-test.
+  if (SELF_TEST) {
+    try {
+      const target = SELF_TEST_REPORT || path.join(process.cwd(), 'ql-self-test.json')
+      fs.writeFileSync(target, JSON.stringify(result, null, 2))
+    } catch (error) {
+      console.log(`QL_SELF_TEST could not write the report: ${error.message}`)
+    }
+  }
   console.log(`QL_SELF_TEST ${JSON.stringify(result)}`)
+  // app.exit() runs the normal shutdown path; process.exit() is the backstop
+  // for when a renderer keeps the loop alive.
   app.exit(result.ok ? 0 : 1)
+  setTimeout(() => process.exit(result.ok ? 0 : 1), 3000)
 }
+
+// Headless CI has no GPU and Electron's GPU process can stall the renderer
+// there. This must happen before the app is ready - calling it inside
+// whenReady() throws, and the rejection silently swallows window creation.
+if (SELF_TEST) app.disableHardwareAcceleration()
 
 app.whenReady().then(() => {
   Menu.setApplicationMenu(null)
-  // Headless CI has no GPU; Electron's GPU process can stall the renderer there.
-  // Software rendering is what a self-test wants anyway - it is testing wiring,
-  // not pixels.
-  if (SELF_TEST) app.disableHardwareAcceleration()
   createWindow()
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()

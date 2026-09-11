@@ -470,6 +470,7 @@ jobs:
           (Invoke-WebRequest -Uri 'http://127.0.0.1:8123/api/health' -UseBasicParsing).Content
 
       - name: run the packaged app's self test
+        timeout-minutes: 5
         shell: pwsh
         env:
           QL_API_BASE: http://127.0.0.1:8123
@@ -480,14 +481,26 @@ jobs:
           $exe = Get-ChildItem "$PWD\app" -Filter 'QuickLaunch.exe' -Recurse | Select-Object -First 1
           if (-not $exe) { throw 'QuickLaunch.exe not found after extraction' }
           Write-Host "running $($exe.FullName)"
-          $output = & $exe.FullName --ql-self-test 2>&1 | Out-String
-          Write-Host $output
-          $line = ($output -split "`n" | Where-Object { $_ -like 'QL_SELF_TEST*' } | Select-Object -First 1)
-          if (-not $line) { throw "the app never reported a self-test result" }
-          $json = $line.Substring('QL_SELF_TEST '.Length) | ConvertFrom-Json
-          if (-not $json.ok) { throw "self test failed: $($line)" }
-          Write-Host "desktop artifact verified:" $line
-          $global:LASTEXITCODE = 0
+
+          # A GUI process is not guaranteed to be waited on, and a frozen window
+          # would hang the job forever. Start it, wait for the report file with a
+          # deadline, then make sure nothing is left running.
+          $report = Join-Path $PWD 'ql-self-test.json'
+          Remove-Item $report -ErrorAction SilentlyContinue
+          $proc = Start-Process -FilePath $exe.FullName -PassThru -NoNewWindow `
+            -ArgumentList '--ql-self-test', "--ql-self-test-report=$report"
+          $deadline = (Get-Date).AddSeconds(90)
+          while (-not (Test-Path $report) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
+
+          $children = Get-Process -Name 'QuickLaunch' -ErrorAction SilentlyContinue
+          if ($children) { $children | Stop-Process -Force -ErrorAction SilentlyContinue }
+          Start-Sleep -Seconds 1
+
+          if (-not (Test-Path $report)) { throw 'the app never reported a self-test result within 90s' }
+          $json = Get-Content $report -Raw | ConvertFrom-Json
+          Write-Host "self test report: $($json | ConvertTo-Json -Compress)"
+          if (-not $json.ok) { throw "self test failed: $($json | ConvertTo-Json -Compress)" }
+          Write-Host 'desktop artifact verified'
 
   android:
     name: android / build apk
