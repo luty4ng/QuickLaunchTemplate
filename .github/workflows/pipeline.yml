@@ -460,16 +460,23 @@ jobs:
 
       - name: stub the API the shell will call
         shell: pwsh
-        env:
-          CORS_ORIGINS: 'app://bundle,http://localhost,https://localhost'
         run: |
-          Start-Process -FilePath python -ArgumentList 'scripts/desktop_api_stub.py' -NoNewWindow
-          # Wait for it rather than guessing.
-          for ($i = 0; $i -lt 30; $i++) {
+          # On Windows, a process started by a step is cleaned up when the step
+          # ends unless it is truly detached. The stub must outlive this step,
+          # so it is launched through WMI (Win32_Process.Create), which creates it
+          # outside this process tree.
+          $log = Join-Path $PWD 'stub.log'
+          $cmd = "python `"$PWD\scripts\desktop_api_stub.py`" > `"$log`" 2>&1"
+          $created = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = "cmd.exe /c $cmd" }
+          Write-Host "stub launched, pid $($created.ProcessId)"
+
+          for ($i = 0; $i -lt 40; $i++) {
             try { Invoke-WebRequest -Uri 'http://127.0.0.1:8123/api/health' -UseBasicParsing | Out-Null; break }
             catch { Start-Sleep -Milliseconds 500 }
           }
-          (Invoke-WebRequest -Uri 'http://127.0.0.1:8123/api/health' -UseBasicParsing).Content
+          $health = Invoke-WebRequest -Uri 'http://127.0.0.1:8123/api/health' -UseBasicParsing
+          Write-Host "stub health: $($health.Content)"
+          if (-not $health) { throw 'the stub API did not start' }
 
       - name: run the packaged app's self test
         timeout-minutes: 5
@@ -480,6 +487,15 @@ jobs:
           # job log; without it a "blank window" is undiagnosable from CI.
           ELECTRON_ENABLE_LOGGING: '1'
         run: |
+          # Fail early and clearly if the stub is gone, instead of reporting a
+          # mysterious network error from inside the app.
+          try {
+            $health = Invoke-WebRequest -Uri 'http://127.0.0.1:8123/api/health' -UseBasicParsing -TimeoutSec 5
+            Write-Host "stub reachable before the test: $($health.Content)"
+          } catch {
+            throw "the stub API is not running before the self test: $($_.Exception.Message)"
+          }
+
           $exe = Get-ChildItem "$PWD\app" -Filter 'QuickLaunch.exe' -Recurse | Select-Object -First 1
           if (-not $exe) { throw 'QuickLaunch.exe not found after extraction' }
           Write-Host "running $($exe.FullName)"
@@ -500,9 +516,20 @@ jobs:
 
           if (-not (Test-Path $report)) { throw 'the app never reported a self-test result within 90s' }
           $json = Get-Content $report -Raw | ConvertFrom-Json
-          Write-Host "self test report: $($json | ConvertTo-Json -Compress)"
-          if (-not $json.ok) { throw "self test failed: $($json | ConvertTo-Json -Compress)" }
+          # Depth 8 so the nested probe results survive serialisation.
+          Write-Host "self test report: $($json | ConvertTo-Json -Depth 8 -Compress)"
+          if (Test-Path 'stub.log') { Write-Host "--- stub log ---"; Get-Content 'stub.log' | Select-Object -Last 20 }
+          if (-not $json.ok) { throw "self test failed: $($json | ConvertTo-Json -Depth 8 -Compress)" }
           Write-Host 'desktop artifact verified'
+
+      - name: stop the stub
+        if: always()
+        shell: pwsh
+        run: |
+          Get-CimInstance Win32_Process -Filter "Name = 'python.exe'" |
+            Where-Object { $_.CommandLine -like '*desktop_api_stub*' } |
+            ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+          Write-Host 'stub stopped'
 
   android:
     name: android / build apk
