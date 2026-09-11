@@ -47,7 +47,15 @@ def token() -> str:
     raise SystemExit("no token in the git credential store")
 
 
-def call(method: str, path: str, body: dict | None = None, *, raw: bool = False, ok: tuple[int, ...] = (200,)):
+def call(
+    method: str,
+    path: str,
+    body: dict | None = None,
+    *,
+    raw: bool = False,
+    ok: tuple[int, ...] = (200,),
+    attempts: int = 5,
+):
     url = path if path.startswith("http") else API + path
     data = json.dumps(body).encode() if body is not None else None
     request = urllib.request.Request(url, data=data, method=method)
@@ -57,19 +65,30 @@ def call(method: str, path: str, body: dict | None = None, *, raw: bool = False,
     request.add_header("User-Agent", "quicklaunch-demo")
     if data:
         request.add_header("Content-Type", "application/json")
-    try:
-        with urllib.request.urlopen(request, timeout=60) as response:
-            payload = response.read()
-            if response.status not in ok:
-                raise SystemExit(f"{method} {path} -> {response.status}")
-    except urllib.error.HTTPError as error:
-        detail = error.read().decode(errors="replace")
-        if error.code in ok:
-            return json.loads(detail) if detail else {}
-        raise SystemExit(f"{method} {path} -> {error.code}: {detail[:400]}") from None
-    if raw:
-        return payload.decode(errors="replace")
-    return json.loads(payload) if payload else {}
+
+    # api.github.com is reached over a link that drops connections now and then;
+    # retry transport errors and 5xx instead of failing an overnight run.
+    last: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                payload = response.read()
+                if raw:
+                    return payload.decode(errors="replace")
+                return json.loads(payload) if payload else {}
+        except urllib.error.HTTPError as error:
+            detail = error.read().decode(errors="replace")
+            if error.code in ok:
+                return json.loads(detail) if detail else {}
+            if error.code >= 500 or error.code == 429:
+                last = SystemExit(f"{method} {path} -> {error.code}: {detail[:200]}")
+            else:
+                raise SystemExit(f"{method} {path} -> {error.code}: {detail[:400]}") from None
+        except (urllib.error.URLError, TimeoutError, OSError) as error:
+            last = error
+        if attempt < attempts:
+            time.sleep(min(2**attempt, 30))
+    raise SystemExit(f"{method} {path} failed after {attempts} attempts: {last}")
 
 
 def cmd_whoami(_: argparse.Namespace) -> int:

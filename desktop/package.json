@@ -4,6 +4,12 @@
   "version": "1.0.0",
   "description": "QuickLaunch desktop shell - wraps the shared web bundle with Electron",
   "main": "main.js",
+  "homepage": "https://github.com/luty4ng/QuickLaunchTemplate",
+  "author": {
+    "name": "QuickLaunch",
+    "email": "luty4ng@users.noreply.github.com"
+  },
+  "license": "MIT",
   "scripts": {
     "stage": "node scripts/stage-web.mjs",
     "start": "npm run stage && electron .",
@@ -38,6 +44,7 @@
     "linux": {
       "target": ["AppImage", "deb"],
       "category": "Utility",
+      "maintainer": "QuickLaunch <luty4ng@users.noreply.github.com>",
       "artifactName": "QuickLaunch-${version}-${arch}.${ext}"
     },
     "publish": null

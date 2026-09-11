@@ -30,11 +30,22 @@ os.environ["WEB_DIST"] = str(_TMP / "no-web-dist")
 import asyncio  # noqa: E402
 
 import sqlalchemy as sa  # noqa: E402
-from app.main import app  # noqa: E402
+from app.main import app, run_migrations  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 from sqlalchemy.ext.asyncio import create_async_engine  # noqa: E402
 
 _DATABASE_URL = os.environ["DATABASE_URL"]
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _migrated_database() -> None:
+    """Bring the schema up once, independently of whether `client` is used.
+
+    The unit tests never build a TestClient, so without this they would run
+    their table cleanup against a database that has no tables - which is exactly
+    what happened the first time this suite ran in CI.
+    """
+    run_migrations()
 
 
 @pytest.fixture(scope="session")

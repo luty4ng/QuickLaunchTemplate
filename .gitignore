@@ -11,12 +11,17 @@ venv/
 node_modules/
 .npm-cache/
 web/dist/
+web/dist-embedded/
+desktop/web-dist/
 desktop/dist/
 desktop/release/
 mobile/android/
 mobile/ios/
 mobile/www/
 *.tsbuildinfo
+
+# Local scratch (pipeline log downloads, etc.)
+.cache/
 
 # Env / secrets
 .env
