@@ -402,26 +402,46 @@ jobs:
       # The desktop shell ships the web bundle as a resource. Reuse the web
       # job's artifact when it exists, but do not depend on it: that job is
       # skipped when nothing under web/ changed, and a missing artifact would
-      # otherwise fail an unrelated desktop build.
+      # otherwise fail an unrelated desktop build. (Observed exactly that in
+      # run #34653287358.)
       - uses: actions/download-artifact@v8
         continue-on-error: true
         with:
           name: web-dist
           path: web/dist
 
-      - name: build the web bundle if the artifact was not there
-        working-directory: web
+      - name: make sure web/dist has a relative-path bundle
+        shell: bash
         env:
+          # The web job builds with a relative base and that artifact is reused
+          # as-is. When it is missing, this rebuild must produce the same shape,
+          # or the packaged app loads /assets/... from app://bundle and shows a
+          # blank window.
           VITE_WEB_BASE: './'
         run: |
-          if [ -f dist/index.html ]; then
-            echo "reusing the web job's artifact"
-            ls -la dist
-            exit 0
+          set -euo pipefail
+          # The artifact may have landed one level down; normalise it.
+          if [ ! -f web/dist/index.html ]; then
+            found="$(find web/dist -name index.html -print -quit 2>/dev/null || true)"
+            if [ -n "$found" ]; then
+              mv "$(dirname "$found")" web/dist-normalised
+              rm -rf web/dist
+              mv web/dist-normalised web/dist
+            fi
           fi
-          echo "no web artifact (that job was skipped); building here"
-          npm ci --no-audit --no-fund
-          npm run build
+          # A bundle with absolute asset URLs cannot be loaded from app://; treat
+          # it as unusable and rebuild rather than shipping a blank window.
+          if [ -f web/dist/index.html ] && ! grep -q 'src="\./assets/' web/dist/index.html; then
+            echo "artifact uses absolute asset paths; rebuilding with a relative base"
+            rm -rf web/dist
+          fi
+          if [ -f web/dist/index.html ]; then
+            echo "reusing the web job's artifact"; ls -la web/dist; exit 0
+          fi
+          echo "no usable web artifact (that job was skipped); building here"
+          cd web && npm ci --no-audit --no-fund && npm run build
+          test -f dist/index.html
+          grep -q 'src="\./assets/' dist/index.html
 
       - name: package
         working-directory: desktop
