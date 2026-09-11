@@ -1,0 +1,49 @@
+{
+  "name": "quicklaunch-desktop",
+  "private": true,
+  "version": "1.0.0",
+  "description": "QuickLaunch desktop shell - wraps the shared web bundle with Electron",
+  "main": "main.js",
+  "scripts": {
+    "stage": "node scripts/stage-web.mjs",
+    "start": "npm run stage && electron .",
+    "pack": "npm run stage && electron-builder --dir",
+    "dist": "npm run stage && electron-builder --win --linux",
+    "dist:win": "npm run stage && electron-builder --win",
+    "dist:linux": "npm run stage && electron-builder --linux"
+  },
+  "build": {
+    "appId": "dev.quicklaunch.desktop",
+    "productName": "QuickLaunch",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": ["main.js", "preload.js", "package.json"],
+    "extraResources": [{ "from": "web-dist", "to": "web-dist" }],
+    "win": {
+      "target": [
+        { "target": "nsis", "arch": ["x64"] },
+        { "target": "portable", "arch": ["x64"] }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "artifactName": "QuickLaunch-Setup-${version}-${arch}.${ext}"
+    },
+    "portable": {
+      "artifactName": "QuickLaunch-Portable-${version}-${arch}.${ext}"
+    },
+    "linux": {
+      "target": ["AppImage", "deb"],
+      "category": "Utility",
+      "artifactName": "QuickLaunch-${version}-${arch}.${ext}"
+    },
+    "publish": null
+  },
+  "devDependencies": {
+    "electron": "^44.3.0",
+    "electron-builder": "^26.15.3"
+  }
+}

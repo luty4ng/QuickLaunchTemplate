@@ -1,0 +1,484 @@
+name: pipeline
+
+# One file, because every job here answers the same question: "is this commit
+# shippable?". CI and CD are separate jobs joined by `needs:`, which is simpler
+# and safer than chaining two workflow files with `workflow_run` (that needs an
+# extra token and is easy to get subtly wrong).
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pipeline-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: '3.12'
+  NODE_VERSION: '22'
+  # GHCR requires a lower-case image path.
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  # ---------------------------------------------------------------------
+  # 0. Change detection, so a docs-only commit does not rebuild 3 clients.
+  # ---------------------------------------------------------------------
+  changes:
+    name: changes
+    runs-on: ubuntu-latest
+    outputs:
+      backend: ${{ steps.filter.outputs.backend }}
+      web: ${{ steps.filter.outputs.web }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            backend:
+              - 'backend/**'
+              - 'scripts/**'
+              - 'Dockerfile'
+              - 'compose.yaml'
+              - '.github/workflows/**'
+            web:
+              - 'web/**'
+              - 'desktop/**'
+              - 'mobile/**'
+              - '.github/workflows/**'
+
+  # ---------------------------------------------------------------------
+  # 1. CI - the gates. Nothing ships unless these are green.
+  # ---------------------------------------------------------------------
+  verify-backend:
+    name: backend / lint + unit + integration
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
+
+    services:
+      # Same major version as production: that is what turns "will the
+      # migration work in production?" into a CI question.
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: quicklaunch
+          POSTGRES_PASSWORD: quicklaunch
+          POSTGRES_DB: quicklaunch_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U quicklaunch"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      DATABASE_URL: postgresql+psycopg://quicklaunch:quicklaunch@localhost:5432/quicklaunch_test
+      JWT_SECRET: ci-secret-that-is-definitely-long-enough-for-hs256
+      BCRYPT_ROUNDS: '4'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.txt
+
+      - name: install dependencies
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: lint and format (ruff)
+        working-directory: backend
+        run: |
+          ruff check .
+          ruff format --check .
+
+      - name: migrations apply to postgres 16
+        working-directory: backend
+        run: alembic upgrade head
+
+      - name: migrations are reversible
+        working-directory: backend
+        run: |
+          alembic downgrade base
+          alembic upgrade head
+
+      - name: unit tests (no database)
+        working-directory: backend
+        run: pytest tests/unit -q
+
+      - name: integration tests (real postgres, real HTTP)
+        working-directory: backend
+        run: pytest tests/integration -q
+
+  verify-web:
+    name: web / lint + types + unit + build
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: install dependencies
+        working-directory: web
+        run: npm ci --no-audit --no-fund
+
+      - name: lint
+        working-directory: web
+        run: npm run lint
+
+      - name: typecheck
+        working-directory: web
+        run: npm run typecheck
+
+      - name: unit tests
+        working-directory: web
+        run: npm test
+
+      - name: production build
+        working-directory: web
+        run: npm run build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
+          retention-days: 7
+
+  # ---------------------------------------------------------------------
+  # 2. CD - build the artifact, ship it, then prove it works.
+  # ---------------------------------------------------------------------
+  docker:
+    name: cd / build + push image
+    runs-on: ubuntu-latest
+    needs: [verify-backend, verify-web]
+    # `always()` so a skipped verify (no changes in that area) does not block
+    # the release; a *failed* verify still does, because that is a real failure.
+    if: |
+      always()
+      && !cancelled()
+      && !contains(needs.*.result, 'failure')
+      && github.event_name != 'pull_request'
+
+    permissions:
+      contents: read
+      packages: write
+
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+      tags: ${{ steps.meta.outputs.tags }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # arm64 is emulated, which is slow; the demo ships a single-arch image.
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=sha,prefix=sha-,format=short
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          load: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Keep the exact bytes we just pushed, so the smoke test below exercises
+      # this build and not a re-pull that could race.
+      - name: export image for the deploy stage
+        run: docker save "${{ env.IMAGE }}:sha-${GITHUB_SHA::7}" -o /tmp/image.tar
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: app-image
+          path: /tmp/image.tar
+          retention-days: 1
+
+  deploy:
+    name: cd / deploy + smoke test
+    runs-on: ubuntu-latest
+    needs: docker
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: app-image
+          path: /tmp
+
+      # The migrations service in compose.yaml runs first, the app waits for it.
+      # This is the step that fails loudly when a schema change is broken.
+      - name: start the stack
+        env:
+          APP_IMAGE: ${{ env.IMAGE }}:sha-${{ github.sha }}
+          APP_IMAGE_ARCHIVE: /tmp/image.tar
+          JWT_SECRET: deploy-time-secret-that-is-long-enough-0001
+          POSTGRES_PASSWORD: ci-postgres-password
+          APP_PORT: '8000'
+        run: |
+          set -euo pipefail
+          short="${GITHUB_SHA::7}"
+          docker load -i /tmp/image.tar
+          docker tag "${IMAGE}:sha-${short}" "${IMAGE}:sha-${GITHUB_SHA}"
+          APP_IMAGE="${IMAGE}:sha-${GITHUB_SHA}" docker compose -f compose.yaml up -d --wait
+
+      - name: show container state
+        if: always()
+        run: |
+          docker compose -f compose.yaml ps -a || true
+          docker compose -f compose.yaml logs --tail 80 || true
+
+      - name: smoke test the live deployment
+        run: python3 scripts/smoke.py --base-url http://127.0.0.1:8000 --health-budget-ms 1000
+
+      - name: verify the image healthcheck agrees
+        run: |
+          cid="$(docker compose -f compose.yaml ps -q app)"
+          state="$(docker inspect --format '{{.State.Health.Status}}' "$cid")"
+          echo "container health: $state"
+          test "$state" = "healthy"
+
+      # Rollback rehearsal: redeploy the previous sha- tag and prove the service
+      # comes back. Skipped on the very first successful build, when there is no
+      # earlier tag to go back to.
+      - name: rollback rehearsal
+        id: rollback
+        continue-on-error: true
+        env:
+          PREVIOUS_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          if [ -z "${PREVIOUS_SHA:-}" ] || [ "${PREVIOUS_SHA}" = "0000000000000000000000000000000000000000" ]; then
+            echo "no previous commit; skipping"; exit 0
+          fi
+          previous="${PREVIOUS_SHA:0:7}"
+          docker pull "${IMAGE}:sha-${previous}"
+          APP_IMAGE="${IMAGE}:sha-${previous}" JWT_SECRET=deploy-time-secret-that-is-long-enough-0001 \
+            POSTGRES_PASSWORD=ci-postgres-password APP_PORT=8000 \
+            docker compose -f compose.yaml up -d --wait
+          python3 scripts/smoke.py --base-url http://127.0.0.1:8000 --skip-spa
+
+      - name: tear down
+        if: always()
+        run: docker compose -f compose.yaml down -v || true
+
+  # ---------------------------------------------------------------------
+  # 3. The other two clients. Same web bundle, wrapped twice.
+  # ---------------------------------------------------------------------
+  desktop:
+    name: desktop / package (windows + linux)
+    runs-on: ubuntu-latest
+    needs: [changes, verify-web]
+    if: |
+      always()
+      && needs.verify-web.result != 'failure'
+      && needs.verify-web.result != 'cancelled'
+      && github.event_name != 'pull_request'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: install desktop toolchain
+        working-directory: desktop
+        run: npm ci --no-audit --no-fund
+
+      - name: build web bundle for the embedded shell
+        working-directory: web
+        env:
+          VITE_WEB_BASE: './'
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+
+      - name: package
+        working-directory: desktop
+        env:
+          # Public URL the packaged app talks to by default. Empty = same origin.
+          QL_API_BASE: ${{ vars.QL_API_BASE }}
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npm run dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop
+          path: |
+            desktop/release/*.exe
+            desktop/release/*.AppImage
+            desktop/release/*.deb
+            desktop/release/*.blockmap
+          if-no-files-found: error
+          retention-days: 7
+
+  android:
+    name: android / build apk
+    runs-on: ubuntu-latest
+    needs: [changes, verify-web]
+    if: |
+      always()
+      && needs.verify-web.result != 'failure'
+      && needs.verify-web.result != 'cancelled'
+      && github.event_name != 'pull_request'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+
+      # The runner image already ships a JDK and the Android SDK; this pins them
+      # so a runner image bump cannot silently change the build.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: android-actions/setup-android@v3
+
+      - name: install the exact platform Capacitor asks for
+        run: |
+          sdkmanager --install "platforms;android-36" "build-tools;36.0.0" "platform-tools"
+          sdkmanager --licenses <<< 'y' || true
+
+      - name: install capacitor toolchain
+        working-directory: mobile
+        run: npm ci --no-audit --no-fund
+
+      - name: build web bundle for the WebView
+        working-directory: web
+        env:
+          VITE_WEB_BASE: './'
+          # The APK must call a reachable server. Set the repository variable
+          # QL_API_BASE to the deployed URL; localhost would only work on an
+          # emulator, which is why the runtime override in the UI exists too.
+          VITE_API_BASE: ${{ vars.QL_API_BASE }}
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+
+      - name: copy bundle into the native project and add the Android platform
+        working-directory: mobile
+        run: |
+          npx cap sync android
+          if [ ! -d android ]; then npx cap add android; fi
+          npx cap sync android
+
+      - name: build the debug apk (signed with the standard debug key)
+        working-directory: mobile/android
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon assembleDebug
+
+      - name: report apk
+        working-directory: mobile
+        run: ls -lh android/app/build/outputs/apk/debug/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: mobile/android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 7
+
+  # ---------------------------------------------------------------------
+  # 4. Everything a user can actually download, in one place.
+  # ---------------------------------------------------------------------
+  release:
+    name: release / publish build
+    runs-on: ubuntu-latest
+    needs: [docker, deploy, desktop, android]
+    if: |
+      always()
+      && !cancelled()
+      && !contains(needs.*.result, 'failure')
+      && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: android-apk
+          path: dist/android
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: desktop
+          path: dist/desktop
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: dist/web
+
+      - name: assemble the release bundle
+        run: |
+          set -euo pipefail
+          cd dist
+          zip -qr "web-${GITHUB_SHA::7}.zip" web
+          rm -rf web
+          ls -lhR .
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: QuickLaunch build ${{ github.run_number }} (${{ github.sha }})
+          body: |
+            Automated build from `${{ github.sha }}`.
+
+            | target | artifact |
+            |---|---|
+            | web | served by the container image `${{ env.IMAGE }}:sha-${{ github.sha }}` |
+            | desktop (Windows) | `QuickLaunch Setup *.exe` installer, `*.exe` portable |
+            | desktop (Linux) | `*.AppImage`, `*.deb` |
+            | android | `app-debug.apk` |
+            | web (static) | `web-${{ github.sha }}.zip` |
+
+            The image for this build: `${{ env.IMAGE }}:sha-${{ github.sha }}`
+            (also `:latest` when this ran on the default branch).
+          files: dist/**/*
+          fail_on_unmatched_files: false

@@ -1,0 +1,25 @@
+[project]
+name = "quicklaunch-backend"
+version = "1.0.0"
+description = "QuickLaunch demo API - FastAPI backend for the CI/CD pipeline demo"
+requires-python = ">=3.11"
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+src = ["app", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM", "C4", "ASYNC"]
+ignore = ["B008"]  # FastAPI's Depends()/Cookie() defaults are the documented idiom
+
+[tool.ruff.lint.per-file-ignores]
+"migrations/versions/*.py" = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+filterwarnings = ["error::DeprecationWarning:app.*"]
+markers = [
+    "integration: exercises HTTP endpoints end to end (needs a migrated database)",
+]

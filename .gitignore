@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Node
+node_modules/
+.npm-cache/
+web/dist/
+desktop/dist/
+desktop/release/
+mobile/android/
+mobile/ios/
+mobile/www/
+*.tsbuildinfo
+
+# Env / secrets
+.env
+.env.local
+*.local.env
+
+# Local data
+*.db
+*.sqlite3
+data/
+
+# OS / editor noise
+debug.log
+.DS_Store
+Thumbs.db

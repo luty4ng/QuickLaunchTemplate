@@ -1,0 +1,11 @@
+{
+  "appId": "dev.quicklaunch.app",
+  "appName": "QuickLaunch",
+  "webDir": "www",
+  "android": {
+    "allowMixedContent": false
+  },
+  "server": {
+    "androidScheme": "http"
+  }
+}

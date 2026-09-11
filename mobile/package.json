@@ -1,0 +1,19 @@
+{
+  "name": "quicklaunch-mobile",
+  "private": true,
+  "version": "1.0.0",
+  "description": "QuickLaunch Android shell - the same web bundle inside a Capacitor WebView",
+  "scripts": {
+    "sync": "cap sync android",
+    "add:android": "cap add android",
+    "open": "cap open android",
+    "build:apk": "cd android && gradlew.bat assembleDebug"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.5.2",
+    "@capacitor/core": "^8.5.2"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.5.2"
+  }
+}

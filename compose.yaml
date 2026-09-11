@@ -1,0 +1,61 @@
+# Deployment stack: database + one-shot migration + API/web container.
+#
+#   docker compose up -d --wait
+#
+# Two deliberate choices:
+#   * migrations run as their own service (`migrate`) and the app waits for it -
+#     never inside the app's start command, so a restart loop can never run
+#     migrations concurrently with a rollout;
+#   * the app image is pulled by tag, and CD overrides `APP_IMAGE` with the
+#     exact sha- tag it just built, which is also the rollback anchor.
+
+name: quicklaunch
+
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-quicklaunch}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-quicklaunch}
+      POSTGRES_DB: ${POSTGRES_DB:-quicklaunch}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-quicklaunch} -d ${POSTGRES_DB:-quicklaunch}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  migrate:
+    image: ${APP_IMAGE:-ghcr.io/luty4ng/quicklaunchtemplate:latest}
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-quicklaunch}:${POSTGRES_PASSWORD:-quicklaunch}@db:5432/${POSTGRES_DB:-quicklaunch}
+    working_dir: /app/backend
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+
+  app:
+    image: ${APP_IMAGE:-ghcr.io/luty4ng/quicklaunchtemplate:latest}
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      APP_ENV: production
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-quicklaunch}:${POSTGRES_PASSWORD:-quicklaunch}@db:5432/${POSTGRES_DB:-quicklaunch}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set}
+      AUTO_MIGRATE: "false"
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
+      WEB_DIST: /app/web/dist
+    ports:
+      - "${APP_PORT:-8000}:8000"
+    restart: unless-stopped
+
+volumes:
+  db-data:

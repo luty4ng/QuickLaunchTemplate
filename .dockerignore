@@ -1,0 +1,21 @@
+# Everything the container build does not need. Keep the context small so
+# `docker buildx` uploads kilobytes instead of gigabytes.
+.git
+.github
+.venv
+.npm-cache
+**/node_modules
+web/dist
+web/dist-embedded
+desktop/release
+mobile/android
+mobile/www
+**/__pycache__
+**/.pytest_cache
+**/.ruff_cache
+data
+*.db
+*.sqlite3
+.env
+debug.log
+report/
