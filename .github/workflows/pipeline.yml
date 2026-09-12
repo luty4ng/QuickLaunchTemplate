@@ -521,6 +521,19 @@ jobs:
       - name: smoke test the live deployment
         run: python3 scripts/smoke.py --base-url http://127.0.0.1:8000 --health-budget-ms 1000
 
+      # Both sides of the webhook conversation, printed whatever the outcome.
+      # A webhook that never arrives and one that arrives but grants nothing look
+      # identical from the smoke test's side, and the difference is the whole
+      # diagnosis.
+      - name: payment provider and application logs
+        if: always()
+        run: |
+          echo "===== fake provider (deliveries and control calls) ====="
+          cat /tmp/fake-stripe.log || echo "(no provider log)"
+          echo
+          echo "===== application (billing responses) ====="
+          docker compose -f compose.yaml logs --tail 40 app || true
+
       - name: verify the image healthcheck agrees
         run: |
           cid="$(docker compose -f compose.yaml ps -q app)"
