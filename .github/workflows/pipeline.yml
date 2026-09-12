@@ -141,9 +141,9 @@ jobs:
     name: changes
     runs-on: ubuntu-latest
     outputs:
-      backend: ${{ steps.filter.outputs.backend }}
-      web: ${{ steps.filter.outputs.web }}
-      deployable: ${{ steps.filter.outputs.deployable }}
+      backend: ${{ steps.scope.outputs.backend }}
+      web: ${{ steps.scope.outputs.web }}
+      deployable: ${{ steps.scope.outputs.deployable }}
       publish_android: ${{ steps.switches.outputs.publish_android }}
       publish_linux: ${{ steps.switches.outputs.publish_linux }}
     steps:
@@ -189,6 +189,39 @@ jobs:
               - 'Dockerfile'
               - 'compose.yaml'
               - '.github/workflows/**'
+
+      # A tag is a release, and the agreed rule is "one tag publishes the whole
+      # set". The path filter exists to skip work on ordinary pushes; applied to
+      # a release it silently *trimmed* the release instead. Measured on the first
+      # tag-driven release (v1.2.0, a documentation-only commit): the backend and
+      # web suites were skipped, the image was never smoke tested, and the release
+      # came out without web-<sha>.zip - a published version that nothing had just
+      # verified, which is the one thing this pipeline promises not to do.
+      - id: scope
+        env:
+          IS_TAG: ${{ github.ref_type == 'tag' }}
+          FILTER_BACKEND: ${{ steps.filter.outputs.backend }}
+          FILTER_WEB: ${{ steps.filter.outputs.web }}
+          FILTER_DEPLOYABLE: ${{ steps.filter.outputs.deployable }}
+        run: |
+          set -euo pipefail
+          if [ "$IS_TAG" = "true" ]; then
+            backend=true
+            web=true
+            deployable=true
+            echo "release tag: every target is in scope, whatever the diff touched"
+          else
+            backend="$FILTER_BACKEND"
+            web="$FILTER_WEB"
+            deployable="$FILTER_DEPLOYABLE"
+            echo "branch push: scope taken from the path filter"
+          fi
+          {
+            echo "backend=$backend"
+            echo "web=$web"
+            echo "deployable=$deployable"
+          } >> "$GITHUB_OUTPUT"
+          echo "scope: backend=$backend web=$web deployable=$deployable"
 
   # ---------------------------------------------------------------------
   # 1. CI - the gates. Nothing ships unless these are green.

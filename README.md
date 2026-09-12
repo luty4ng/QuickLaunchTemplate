@@ -66,6 +66,10 @@
 | Linux 桌面端 | `*.AppImage`、`*.deb`、`latest-linux.yml` | 关闭 | `desktop` job |
 | 安卓端 | `app-debug.apk`（可直接安装，debug 签名） | 关闭 | `android` job |
 
+> **一次 tag = 全套验证 + 全套产物。** 路径过滤器只用于分支推送省时间；打 tag 时它被显式
+> 绕过（`changes` job 里的 `scope` 一步），否则一个只改文档的 tag 会「发布一个没跑过测试、
+> 也没冒烟过镜像的版本」——那正是这条管线承诺不会发生的事。
+
 ### 如何打开可选目标
 
 开关是**仓库变量**，改一次持续生效：
@@ -135,7 +139,12 @@ CI 每次部署都会**演练一遍回滚**，证明这条路真的通。
 | Docker Hub | 0.00 Mbps | 不通（也就拉不到 `node`/`python` 基础镜像的加速） |
 | pypi.org | 0.52 Mbps | 构建时 `pip install` 会超时 → 传 `PIP_INDEX_URL`（阿里云，实测 4.38 Mbps） |
 | github.com（浅克隆源码） | 7 秒 | 可用，所以「服务器本地构建」成立 |
+| github.com（`git fetch` 增量） | **会周期性被掐断** | 因此取源码有三次尝试：重试 fetch → 浅克隆 → codeload tarball |
 | npm registry | 21.9 Mbps | 正常，无需换源 |
+
+> 取源码那三次尝试不是过度设计：第一次真实部署就是死在
+> `GnuTLS recv error (-110): The TLS connection was non-properly terminated`，
+> 而那时 codeload 的 tarball 是通的。现在 `deploy.sh` 会把用的是哪一种打进日志（CI 日志可见）。
 
 部署所需的仓库配置（都已就位，换仓库时需要重建）：
 
@@ -294,7 +303,8 @@ docker compose up -d --wait
 | 同上，但容器日志里是 `SignatureVerificationError` | 替身和容器各自读了一个字面量密钥，两个都对、配在一起就错 | 两边都读同一个 `STRIPE_WEBHOOK_SECRET` |
 | 签名不对时返回 500 | SDK 抛的 `SignatureVerificationError` 不是 `ValueError`，没被映射成 400 | 在共用的验签函数里统一转成 400（否则 Stripe 会永远重投） |
 
-线上地址 **https://quicklaunch.luty.tech**（Traefik + Let's Encrypt，公网冒烟 28/28）。
+线上地址 **https://quicklaunch.luty.tech**（Traefik + Let's Encrypt），公网冒烟
+**23/23**（未配置支付时的状态）/ **28/28**（配置了支付方）。
 
 ## 文档
 

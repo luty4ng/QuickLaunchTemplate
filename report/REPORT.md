@@ -59,6 +59,9 @@ git 历史里（`git log` 可逐条复核）。值得记录的几条：
 | 支付链路「webhook 到了但什么都没授予」，日志里连报错都没有 | 替身发的载荷少一层 `data.object`，应用按 Stripe 的形状去读，读到空 | 替身与测试用的内存网关共用同一份事件构造代码 |
 | 同上，但容器日志是 `SignatureVerificationError`，响应 500 | 替身与容器各自读了一个字面量密钥：两个都对，配在一起就错 | 两边都读同一个 `STRIPE_WEBHOOK_SECRET`；替身在验签被拒时直接打印原因 |
 | 签名不对返回 500（Stripe 会永远重投） | SDK 抛的 `SignatureVerificationError` 不继承 `ValueError`，没被映射成 400 | 在共用的验签函数里统一转成 `ValueError` → 400 |
+| 首次真实部署失败：`GnuTLS recv error (-110): The TLS connection was non-properly terminated` | 服务器到 github.com 的 git-over-HTTPS 会**周期性被掐断**，而 `deploy.sh` 取源码只有一次 `git fetch`，没有重试也没有退路；手工复现时它还会无声挂住 3 分钟 | 改成三种方式依次尝试（fetch 重试 3 次 → 浅克隆 → codeload tarball），并给 git 加 `lowSpeedTime` 让卡住的传输 30 秒内报错 |
+| 手工拷贝的 `deploy.sh` 部署成功却退出 1（`$'\r': command not found`） | Windows 工作副本是 CRLF，bash 把最后一行的 `\r` 当命令 | 新增 `.gitattributes` 把 `*.sh`/`*.py`/`*.yml` 固定为 LF |
+| 首个 tag 发布（v1.2.0，只改了文档）**跳过了全部测试与镜像冒烟**，Release 里还少了 `web-<sha>.zip` | 路径过滤器在分支推送时省时间，用在发布上就变成「悄悄削减发布内容」 | `changes` job 增加 `scope` 一步：**tag 一律全量在范围内**，不再看 diff |
 
 最后三条尤其说明问题：**如果只跑绿、不做反向验证、不以真实产物为准，这类缺陷会一路带到用户面前。**
 支付那条更典型：整条链路「看起来全绿」，只是钱进来之后档位不会变。
@@ -379,7 +382,8 @@ curl -sS -o /dev/null -w '%{http_code} %{ssl_verify_result}\n' https://quicklaun
 curl -sS https://quicklaunch.luty.tech/api/health
 
 # 2. 看 tag 触发的全绿管线（发布 + 部署 + 公网冒烟）
-open https://github.com/luty4ng/QuickLaunchTemplate/actions/runs/<v1.2.0 的运行号>
+open https://github.com/luty4ng/QuickLaunchTemplate/actions/runs/34693476660   # 部署 + 公网冒烟门禁
+open https://github.com/luty4ng/QuickLaunchTemplate/actions/runs/34692410445   # tag v1.2.0 的发布（下载页产物）
 
 # 3. 看 tag 发布的产物（5 个：安装包、zip、blockmap、latest.yml、web zip）
 open https://github.com/luty4ng/QuickLaunchTemplate/releases/tag/v1.2.0
@@ -556,6 +560,8 @@ CI 每次部署都会**演练一遍回滚**（重新部署上一个 `sha-` tag �
 | ghcr.io | **74 B/s** | 拉镜像这条路直接死掉（`docker pull` 挂死 12 分钟） |
 | github.com release 资产 | 0.00 Mbps | 也不通 |
 | github.com 源码浅克隆 | **7 秒** | **可用** → 所以改成「服务器本地构建」 |
+| github.com 的 git fetch（增量） | 会**周期性被掐断**：`GnuTLS recv error (-110): The TLS connection was non-properly terminated`；卡住时不报错、一直挂着 | `deploy.sh` 因此改成三种取源码方式依次尝试（重试 fetch → 浅克隆 → codeload tarball）+ 超时上限 |
+| codeload tarball（`/tar.gz/<ref>`） | **3 秒 / 223 KB** | fetch 被掐的那一刻它是通的，所以作为最后一道退路 |
 | Docker Hub | 0.00 Mbps | 不通，`daemon.json` 也不存在（没有镜像加速可用） |
 | pypi.org | **0.52 Mbps** | 构建时 `pip install` 214 秒后失败 → 传 `PIP_INDEX_URL`（阿里云，实测 4.38 Mbps） |
 | npm registry | 21.9 Mbps | 正常，官方源够快，不需要换 |
@@ -576,6 +582,22 @@ CI 每次部署都会**演练一遍回滚**（重新部署上一个 `sha-` tag �
 - 私钥只能登录这一个用户，且 CI 只用它执行 `~/quicklaunch/deploy.sh`；
 - 所有写操作限制在 `~/quicklaunch/` 目录内；
 - 不执行任何破坏性动作（无 `down -v`、无 `rm -rf`、无系统级改动），重启类操作不做。
+
+### 13.5 上线记录（v1.2.0）
+
+| 步骤 | 结果 |
+|---|---|
+| tag `v1.2.0` 推送（run [#34692410445](https://github.com/luty4ng/QuickLaunchTemplate/actions/runs/34692410445)） | 镜像、Windows 产物、Release + `latest.yml` 全部成功；**部署这一步失败**（取源码被掐断，见上表） |
+| 修好取源码后单独复跑部署（run [#34693476660](https://github.com/luty4ng/QuickLaunchTemplate/actions/runs/34693476660)，`workflow_dispatch -f deploy_ref=v1.2.0`，不打新 tag） | `deploy` 成功 + **公网冒烟门禁通过** |
+| 服务器上的版本 | `quicklaunch:62bb66b`（= tag 指向的提交），app healthy、db healthy |
+| 迁移 | `0002_billing`（订阅档位与 webhook 幂等表）在部署过程中作为独立一步执行，成功 |
+| 公网冒烟 | **23/23**（`https://quicklaunch.luty.tech`，未配置支付时的状态；其中包含「未配置支付时 checkout 必须返回 503」这一项） |
+| 其他服务 | `9router`、`homepage`、`traefik` 均未受影响，Traefik 配置未改动 |
+
+**这次失败本身值得记下来**：部署脚本的失败没有把站点打挂（构建成功前不切换容器），
+线上在失败期间一直正常服务旧版本——「失败即停、不半途切换」的设计在真实故障里生效了。
+另外它也暴露了一个只有真跑才会出现的问题：**断网重试不是可选项**，
+在这台服务器上它是部署路径的一部分。
 
 ---
 
