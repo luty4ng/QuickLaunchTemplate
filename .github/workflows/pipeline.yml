@@ -28,6 +28,20 @@ on:
         required: false
         type: boolean
         default: false
+      publish_android:
+        description: >-
+          Build and publish the Android APK for this run. Off by default; the
+          repository variable PUBLISH_ANDROID turns it on permanently.
+        required: false
+        type: boolean
+        default: false
+      publish_linux:
+        description: >-
+          Build and publish the Linux desktop packages for this run. Off by
+          default; the repository variable PUBLISH_LINUX turns it on permanently.
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -72,6 +86,14 @@ jobs:
 
   # ---------------------------------------------------------------------
   # 0b. Change detection, so a docs-only commit does not rebuild 3 clients.
+  #
+  #     It also resolves the two publication switches. The defaults encode what
+  #     this project actually ships: Windows desktop and the web (the container
+  #     image). Android and Linux desktop are built only when asked for, so a
+  #     normal release does not spend minutes producing an APK nobody installs.
+  #
+  #     Turn them on permanently with repository variables, or for one run with
+  #     a workflow_dispatch input.
   # ---------------------------------------------------------------------
   changes:
     name: changes
@@ -80,8 +102,26 @@ jobs:
       backend: ${{ steps.filter.outputs.backend }}
       web: ${{ steps.filter.outputs.web }}
       deployable: ${{ steps.filter.outputs.deployable }}
+      publish_android: ${{ steps.switches.outputs.publish_android }}
+      publish_linux: ${{ steps.switches.outputs.publish_linux }}
     steps:
       - uses: actions/checkout@v7
+
+      - id: switches
+        env:
+          # `== 'true'` matters: vars.* is a string, and "false" is truthy in an
+          # expression, so a plain `vars.PUBLISH_ANDROID` would always be true.
+          VAR_ANDROID: ${{ vars.PUBLISH_ANDROID == 'true' }}
+          VAR_LINUX: ${{ vars.PUBLISH_LINUX == 'true' }}
+          INPUT_ANDROID: ${{ inputs.publish_android }}
+          INPUT_LINUX: ${{ inputs.publish_linux }}
+        run: |
+          android="${INPUT_ANDROID:-$VAR_ANDROID}"
+          linux="${INPUT_LINUX:-$VAR_LINUX}"
+          echo "publish_android=$android" >> "$GITHUB_OUTPUT"
+          echo "publish_linux=$linux" >> "$GITHUB_OUTPUT"
+          echo "publishing: windows=yes web=yes android=$android linux=$linux"
+
       - uses: dorny/paths-filter@v4
         id: filter
         with:
@@ -452,15 +492,28 @@ jobs:
             runner: windows-latest
             script: dist:win
             artifact: desktop-windows
+          # Linux is built only when the switch is on. Shipping an AppImage to
+          # nobody costs a runner minute and clutters the downloads page.
           - target: linux
             runner: ubuntu-latest
             script: dist:linux
             artifact: desktop-linux
+            enabled: ${{ needs.changes.outputs.publish_linux }}
 
     steps:
-      - uses: actions/checkout@v7
+      # GitHub Actions has no supported way to skip a single matrix leg by
+      # condition, so a switched-off target runs a short, successful no-op: every
+      # real step below carries the same condition. A green no-op is deliberate -
+      # a red "skipped" leg would make every default release look half-broken.
+      - if: matrix.enabled != 'true' && matrix.target != 'windows'
+        name: this target is switched off
+        run: |
+          echo "::notice::${{ matrix.target }} desktop packaging is off; enable it with the repository variable PUBLISH_LINUX=true"
+      - if: matrix.enabled == 'true' || matrix.target == 'windows'
+        uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v7
+      - if: matrix.enabled == 'true' || matrix.target == 'windows'
+        uses: actions/setup-node@v7
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
@@ -468,18 +521,21 @@ jobs:
             desktop/package-lock.json
             web/package-lock.json
 
-      - name: install toolchains
+      - if: matrix.enabled == 'true' || matrix.target == 'windows'
+        name: install toolchains
         working-directory: desktop
         run: npm ci --no-audit --no-fund
 
-      - name: unit tests (update version comparison)
+      - if: matrix.enabled == 'true' || matrix.target == 'windows'
+        name: unit tests (update version comparison)
         working-directory: desktop
         run: npm test
 
       # The version decides whether installed clients ever see this update:
       # electron-updater only offers a version strictly higher than the running
       # one, so "1.0.0" for every build would silently never update anyone.
-      - name: stamp the build version
+      - if: matrix.enabled == 'true' || matrix.target == 'windows'
+        name: stamp the build version
         working-directory: desktop
         run: npm run stamp -- ${{ needs.versioning.outputs.version }}
 
@@ -488,13 +544,15 @@ jobs:
       # skipped when nothing under web/ changed, and a missing artifact would
       # otherwise fail an unrelated desktop build. (Observed exactly that in
       # run #34653287358.)
-      - uses: actions/download-artifact@v8
+      - if: matrix.enabled == 'true' || matrix.target == 'windows'
+        uses: actions/download-artifact@v8
         continue-on-error: true
         with:
           name: web-dist
           path: web/dist
 
-      - name: make sure web/dist has a relative-path bundle
+      - if: matrix.enabled == 'true' || matrix.target == 'windows'
+        name: make sure web/dist has a relative-path bundle
         shell: bash
         env:
           # The web job builds with a relative base and that artifact is reused
@@ -527,7 +585,8 @@ jobs:
           test -f dist/index.html
           grep -q 'src="\./assets/' dist/index.html
 
-      - name: package
+      - if: matrix.enabled == 'true' || matrix.target == 'windows'
+        name: package
         working-directory: desktop
         env:
           # Public URL the packaged app talks to by default. Empty = same origin.
@@ -539,7 +598,8 @@ jobs:
         # demanding GH_TOKEN.
         run: npm run ${{ matrix.script }} -- --publish never
 
-      - uses: actions/upload-artifact@v7
+      - if: matrix.enabled == 'true' || matrix.target == 'windows'
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}
           path: |
@@ -561,7 +621,8 @@ jobs:
       # Each platform writes its own feed file: `latest.yml` for Windows and
       # `latest-linux.yml` for AppImage. Only the Windows one matters here (the
       # desktop client under test is the Windows build), but both are uploaded.
-      - name: check the platform update feed was generated
+      - if: matrix.enabled == 'true' || matrix.target == 'windows'
+        name: check the platform update feed was generated
         shell: bash
         working-directory: desktop
         env:
@@ -727,8 +788,13 @@ jobs:
     name: android / build apk
     runs-on: ubuntu-latest
     needs: [changes, verify-web]
+    # Android is off unless asked for: this project ships a Windows desktop client
+    # and the web, so a normal release should not spend two runner minutes on an
+    # APK nobody installs. Enable with the repository variable PUBLISH_ANDROID=true
+    # or a workflow_dispatch input.
     if: |
       always()
+      && needs.changes.outputs.publish_android == 'true'
       && needs.verify-web.result != 'failure'
       && needs.verify-web.result != 'cancelled'
       && github.event_name != 'pull_request'
@@ -821,7 +887,7 @@ jobs:
   release:
     name: release / publish build
     runs-on: ubuntu-latest
-    needs: [versioning, docker, deploy, desktop, android]
+    needs: [versioning, changes, docker, deploy, desktop, android]
     if: |
       always()
       && !cancelled()
@@ -832,7 +898,10 @@ jobs:
       contents: write
 
     steps:
-      - uses: actions/download-artifact@v8
+      # Only attach what this build actually publishes; a missing download would
+      # otherwise fail the whole release.
+      - if: needs.changes.outputs.publish_android == 'true'
+        uses: actions/download-artifact@v8
         with:
           name: android-apk
           path: dist/android
@@ -842,7 +911,8 @@ jobs:
           name: desktop-windows
           path: dist/desktop
 
-      - uses: actions/download-artifact@v8
+      - if: needs.changes.outputs.publish_linux == 'true'
+        uses: actions/download-artifact@v8
         with:
           name: desktop-linux
           path: dist/linux
@@ -878,6 +948,19 @@ jobs:
           grep -q "version: ${{ needs.versioning.outputs.version }}" dist/desktop/latest.yml \
             || { echo "::error::latest.yml does not advertise version ${{ needs.versioning.outputs.version }}"; exit 1; }
 
+      - name: summarise what is being published
+        run: |
+          {
+            echo "### QuickLaunch ${{ needs.versioning.outputs.version }}"
+            echo
+            echo "| target | published |"
+            echo "|---|---|"
+            echo "| windows desktop | yes |"
+            echo "| web + api image | yes |"
+            echo "| linux desktop | ${{ needs.changes.outputs.publish_linux }} |"
+            echo "| android apk | ${{ needs.changes.outputs.publish_android }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - uses: softprops/action-gh-release@v3
         with:
           tag_name: v${{ needs.versioning.outputs.version }}
@@ -893,13 +976,15 @@ jobs:
             |---|---|
             | desktop (Windows) | `QuickLaunch-Setup-${{ needs.versioning.outputs.version }}-x64.exe` installer, `QuickLaunch-${{ needs.versioning.outputs.version }}-win.zip` unpacked |
             | desktop (update feed) | `latest.yml`, `*.blockmap` - what electron-updater downloads |
-            | desktop (Linux) | `*.AppImage`, `*.deb` |
-            | android | `app-debug.apk` |
             | web | served by `${{ env.IMAGE }}:sha-${{ github.sha }}` |
-            | web (static) | `web-${{ github.sha }}.zip` |
+            ${{ needs.changes.outputs.publish_linux == 'true' && '| desktop (Linux) | `*.AppImage`, `*.deb` |' || '' }}
+            ${{ needs.changes.outputs.publish_android == 'true' && '| android | `app-debug.apk` |' || '' }}
 
             A client only updates to a version **higher** than the one it runs, so this
             release must keep its version: retagging or lowering it stops updates.
+
+            Linux desktop and Android are off by default; turn them on with the
+            repository variables `PUBLISH_LINUX` / `PUBLISH_ANDROID`.
           files: |
             dist/desktop/*
             dist/linux/*
