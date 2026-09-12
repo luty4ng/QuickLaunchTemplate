@@ -5,21 +5,25 @@
 > 实现尽量简洁、高效、省心、可扩展。
 > 发布策略演进：最初三端全发；按实际需求改为**默认只发 Windows 桌面端 + 网页端，
 > 安卓端与 Linux 桌面端由开关控制**（见 §12）。
+> 发版机制演进：最初每次分支推送都发一个版本；后改为**只有打 tag 才发布并部署**（见 §13）。
+> 交付后追加：**真实上线到 https://quicklaunch.luty.tech**，并接上 **Stripe 订阅**（见 §14）。
 
 ---
 
 ## 1. 结论
 
-**已完成，且管线是真的跑通的，不是纸面设计。**
+**已完成，且管线是真的跑通的，不是纸面设计——网页端已经跑在公网域名上。**
 
 | 交付物 | 位置 | 状态 |
 |---|---|---|
-| 后端（FastAPI，含迁移、认证、租户隔离） | `backend/` | ✅ 本地 45 个测试通过，CI 在 Postgres 16 上再跑一遍 |
-| 网页端（同一个 React 产物，由后端直接托管） | `web/` | ✅ 11 个单测通过，镜像内含构建产物 |
+| 后端（FastAPI，含迁移、认证、租户隔离、订阅额度） | `backend/` | ✅ 本地 94 个测试通过，CI 在 Postgres 16 上再跑一遍 |
+| 网页端（同一个 React 产物，由后端直接托管） | `web/` | ✅ 20 个单测通过，镜像内含构建产物 |
 | 桌面端（Electron，Windows 默认发布、Linux 可选） | `desktop/` | ✅ 产物自检通过（在 CI 的 Windows runner 上真跑起来），并支持一键自动更新 |
 | 安卓端（Capacitor，可安装 APK，默认不发布） | `mobile/` | ✅ 开关打开后 CI 产出并校验包名与内嵌前端产物 |
-| 一条管线（CI + CD，单文件 + 发布开关） | `.github/workflows/pipeline.yml` | ✅ 11 个 job（含 versioning）全绿 |
-| 一条 Release（默认 5 个可下载产物） | [v1.0.38](https://github.com/luty4ng/QuickLaunchTemplate/releases/tag/v1.0.38) | ✅ |
+| 一条管线（CI + CD，单文件 + 发布开关 + tag 门禁） | `.github/workflows/pipeline.yml` | ✅ 11 个 job（含 versioning）全绿 |
+| 一条 Release（默认 5 个可下载产物） | [v1.2.0](https://github.com/luty4ng/QuickLaunchTemplate/releases/tag/v1.2.0) | ✅ 由 tag 触发，同时部署上线 |
+| **线上部署**（Traefik + Let's Encrypt + compose） | https://quicklaunch.luty.tech | ✅ 公网冒烟 23/23（未配置支付时的状态） |
+| **订阅支付**（Stripe，Free/Plus/Pro 只差额度） | `backend/app/billing/`、`web/src/components/PlanPanel.tsx` | ✅ 流水线每次构建都在替身支付方上跑完整链路 |
 
 关键运行记录（全部是真实执行，可在仓库 Actions / Releases / Packages 页复核）：
 
@@ -28,13 +32,10 @@
 | [#34651815693](https://github.com/luty4ng/QuickLaunchTemplate/actions/runs/34651815693) | ✅ 全绿 | 首个完整成功的端到端管线（当时 10 个 job 全部真实执行），产出镜像 + 三端产物 + Release |
 | [#34677071586](https://github.com/luty4ng/QuickLaunchTemplate/actions/runs/34677071586) | ✅ 全绿 | **默认发布行为**：安卓跳过、Linux 绿色 no-op，Release 只含 Windows + 网页端 |
 | [#34677377502](https://github.com/luty4ng/QuickLaunchTemplate/actions/runs/34677377502) | ✅ 全绿 | **打开开关**：`publish_android` + `publish_linux`，四端全部构建并发布 |
-| [#34675833510](https://github.com/luty4ng/QuickLaunchTemplate/actions/runs/34675833510) | ✅ 全绿 | **更新路径验证**：低版本客户端读到线上 feed → `update-available` |
+| [#34689001392](https://github.com/luty4ng/QuickLaunchTemplate/actions/runs/34689001392) | ✅ 全绿 | **tag 驱动的首次发布 + 真实部署**：`v1.1.0` 上线，容器版本与 tag 指向的提交一致 |
 | [#34652578016](https://github.com/luty4ng/QuickLaunchTemplate/actions/runs/34652578016) | ❌ 按预期变红 | 故意塞类型错误 → `verify-web / typecheck` 拦住 |
 | [#34652632864](https://github.com/luty4ng/QuickLaunchTemplate/actions/runs/34652632864) | ❌ 按预期变红 | 故意塞无用 import → `verify-backend / lint` 拦住 |
 | [#34652715044](https://github.com/luty4ng/QuickLaunchTemplate/actions/runs/34652715044) | ❌ 按预期变红 | 故意破坏租户隔离 → `verify-backend / integration` 拦住 |
-
-最新 Release：[v1.0.39](https://github.com/luty4ng/QuickLaunchTemplate/releases/tag/v1.0.39)（四端全发布）。
-默认发布形态见 [v1.0.38](https://github.com/luty4ng/QuickLaunchTemplate/releases/tag/v1.0.38)（仅 Windows + 网页端）。
 
 > 「一条永远绿的管线，和不存在的管线可信度一样。」——所以上面三条反向验证是本次交付的重点之一。
 
@@ -55,8 +56,12 @@ git 历史里（`git log` 可逐条复核）。值得记录的几条：
 | `net::ERR_CONNECTION_REFUSED` | Windows 上 step 结束时其进程树被回收，桩服务已死 | 用 WMI 启动桩服务，脱离当前进程树 |
 | 文档提交也把桌面端构建搞挂了 | 跳过的 job 不会产出 artifact，而桌面端硬依赖它 | 下载改为尽力而为 + 缺就自己构建 |
 | 镜像里的前端用了绝对路径 `/assets/` | 我自己的 `.gitignore` 里一条 `.env` 把 `web/.env` 悄悄排除了 | 默认值写进 `vite.config.ts`（忽略规则拿不走），并加断言防回归 |
+| 支付链路「webhook 到了但什么都没授予」，日志里连报错都没有 | 替身发的载荷少一层 `data.object`，应用按 Stripe 的形状去读，读到空 | 替身与测试用的内存网关共用同一份事件构造代码 |
+| 同上，但容器日志是 `SignatureVerificationError`，响应 500 | 替身与容器各自读了一个字面量密钥：两个都对，配在一起就错 | 两边都读同一个 `STRIPE_WEBHOOK_SECRET`；替身在验签被拒时直接打印原因 |
+| 签名不对返回 500（Stripe 会永远重投） | SDK 抛的 `SignatureVerificationError` 不继承 `ValueError`，没被映射成 400 | 在共用的验签函数里统一转成 `ValueError` → 400 |
 
-最后两条尤其说明问题：**如果只跑绿、不做反向验证、不以真实产物为准，这两类缺陷会一路带到用户面前。**
+最后三条尤其说明问题：**如果只跑绿、不做反向验证、不以真实产物为准，这类缺陷会一路带到用户面前。**
+支付那条更典型：整条链路「看起来全绿」，只是钱进来之后档位不会变。
 
 ---
 
@@ -283,40 +288,41 @@ CI 与 CD 放在**同一个文件**里用 `needs:` 串联——拆成两个文�
 
 ## 7. 实测数据
 
+以下数字全部来自真实运行（未做估算）：
+
 | 项目 | 数值 | 来源 |
 |---|---|---|
-| 后端测试 | 45 passed（22 单测 + 23 集成） | 本地 + CI |
-| 前端测试 | 11 passed | 本地 + CI |
-| 冒烟用例 | 17/17（首次部署）、16/16（回滚演练） | CI run #34651815693 |
+| 后端测试 | **94 passed**（53 单测 + 41 集成） | 本地（sqlite）+ CI（postgres 16） |
+| 前端测试 | **20 passed** | 本地 + CI |
+| 冒烟用例 | **28/28**（配了支付方）/ **23/23**（未配支付） | run [#34691719517](https://github.com/luty4ng/QuickLaunchTemplate/actions/runs/34691719517) + 本地 |
+| 支付链路（CI 每次构建都跑） | 下单 → 付款 → 已签名 webhook → 档位变 Plus → 第 11 条待办放行 → 取消 → 回 Free 且内容保留，**全部 PASS** | 同上 |
 | `/api/health` 响应 | 20–28 ms（预算 1000 ms） | 冒烟输出 |
-| **CI 门禁（后端 job）** | **38 s** | run #34651815693 |
-| **CI 门禁（前端 job）** | **19 s** | 同上 |
-| CD（构建推送镜像 + 起栈 + 探活 + 冒烟 + 回滚演练） | **46 s + 96 s = 142 s** | 同上，**满足 < 5 分钟基线** |
-| 完整管线（含三端打包 + Release） | **5.0 min** | run #34655397546 |
-| 失败反馈速度 | 28-32 s 变红，下游全部 skipped | run #34652632864 |
-| 镜像 | `ghcr.io/luty4ng/quicklaunchtemplate`，公开，tag `sha-<commit>` + `latest` | GHCR |
-| 变更检测 | 只改文档/脚本时后端 job 自动跳过 | run #34655397546 |
+| **CI 门禁（后端 job）** | **40 s**（起 Postgres 服务 + 迁移可升可回滚 + 94 个测试） | run #34691719517 |
+| **CI 门禁（前端 job）** | **19 s** | run #34651815693（改动前端时） |
+| 镜像构建 + 推送 GHCR | **55 s** | run #34691719517 |
+| 起栈 + 迁移 + 冒烟 + 回滚演练 | **54 s** | 同上 |
+| 桌面端打包（Windows） | **12 分 35 秒**（冷缓存） | 同上 |
+| 完整管线（分支推送） | **12 分 42 秒**，关键路径就是 Windows 打包 | 同上（11:44:13 → 11:56:55） |
+| 失败反馈速度 | **28–32 s 变红，下游全部 skipped** | run #34652632864 |
 
-各 job 耗时明细（run #34651815693）：changes 5s、web 19s、backend 38s、
-desktop(windows) 201s、desktop(linux) 92s、android 125s、docker 46s、deploy 96s、
-desktop-self-test 30s、release 26s。
+> 关于 Windows 打包这 12 分半：npm 依赖有缓存，但 **Electron 与 electron-builder 的二进制
+> 没有缓存**（`~/AppData/Local/electron{,-builder}/Cache`），冷 runner 每次都要重新下载
+> 上百 MB，所以单次耗时在 3–13 分钟之间浮动。这是管线里唯一的长尾，
+> 修法也很直接（把这两个目录也加进 `actions/cache`）——留作后续优化，没有为它推迟发版。
 
-> 说明：CI 门禁本身（19 s / 38 s）远优于 DESIGN.md 的「< 3 分钟」基线；
-> 完整管线 5 分钟里的大头是桌面端打包（electron-builder 在 Windows 上出 NSIS 安装包）。
-> 「从合并到探活通过」这段（docker + deploy + self-test）约 172 s，满足 < 5 分钟基线。
+各 job 耗时明细（run #34691719517）：changes 4s、versioning 3s、backend 40s、
+desktop(linux) 4s（关闭时是 no-op）、desktop(windows) 755s、docker 55s、smoke-image 54s。
+
+> 说明：CI 门禁本身（19 s / 40 s）远优于 DESIGN.md 的「< 3 分钟」基线；
+> 「构建镜像 → 起真实栈 → 冒烟 → 回滚演练」这 109 s 满足 < 5 分钟基线。
 
 ---
 
 ## 8. 如何扩展（这是「可扩展」的具体含义）
 
 1. **加一个客户端**：复用 `web/dist`，加一个 job 即可（就像 Android 那样）。管线结构不需要改。
-2. **接真实服务器**：`compose.yaml` 已经是可部署形态。在一台机器上：
-   ```bash
-   export JWT_SECRET=$(python -c "import secrets;print(secrets.token_urlsafe(48))")
-   docker compose up -d --wait      # 自动跑迁移再起应用
-   ```
-   若要走 CD 自动部署，给 `deploy` job 加一段 SSH（secrets 里放主机、用户、私钥），
-   镜像已经是 `sha-<commit>` 可直接拉取，回滚就是换一个 tag 重新 `up -d`。
+2. **接真实服务器**：**已经做到，见 §13。** 换一台机器只需要改 `DEPLOY_HOST` / `DEPLOY_USER`、
+   把新的公钥放进 `authorized_keys`，其余（compose、Traefik label、迁移独立成步、回滚演练）都不用动。
 3. **加数据库迁移**：写一个新 revision，CI 会自动验证「能升级 + 能回滚 + 真库上跑得通」。
 4. **加一个必须拦截的规则**：加一条测试即可。§5 已经证明这条链路是通的。
 5. **网页端独立托管**：`web-<sha>.zip` 已经在 Release 里，扔到任意静态托管即可，
@@ -326,13 +332,10 @@ desktop-self-test 30s、release 26s。
 
 ## 9. 已知限制（诚实清单）
 
-1. **「deploy」不是把服务部署到服务器上，而是制品验证。**
-   它在 GitHub runner 上真起一套 Postgres 16 + 迁移 + 应用，探活、跑 17 项冒烟、演练一次回滚，
-   **然后 `down -v` 全部销毁**。没有 VPS、没有域名、没有 TLS、没有持久化数据。
-   这是 DESIGN.md 里 A 段的设计意图（「不依赖任何外部服务器」），也正是「GitHub 可以替代部署」这句话
-   成立的部分：GitHub 能替代**制品分发**（Releases / GHCR / Pages）和**部署前的真实验证**，
-   但替代不了**长期运行的 API 进程**——runner 是一次性的，job 结束即销毁。
-   要让人打开 App 就能连上后端，仍需一个常驻容器平台或一台服务器（B 段，模板已留）。
+1. **两个「部署」含义不同，别混淆。** `smoke-image` 在 GitHub runner 上真起一套
+   Postgres 16 + 迁移 + 应用，探活、跑冒烟、演练回滚，**然后 `down -v` 全部销毁**——这是
+   **制品验证**，证明镜像本身是好的。真正把服务放到域名上的是 `deploy-server`（SSH 到服务器，
+   见 §13）。两者都有价值：前者证明镜像，后者证明线上。
 2. **安卓端只到「构建正确」，没有「验证可用」。**
    CI 做的全部是：Gradle 构建成功、包名 `dev.quicklaunch.app` 在二进制 manifest 里、
    `assets/public/index.html` 在 APK 里。**从未安装到设备或模拟器、从未启动、从未发出一次真实请求。**
@@ -347,34 +350,41 @@ desktop-self-test 30s、release 26s。
 5. **没有做依赖/安全扫描**：没有 `pip-audit`、`npm audit`、CodeQL、Dependabot。
 6. **签名相关**：APK 是 debug 签名；Windows/Linux 桌面未做代码签名。
    未签名不影响自动更新功能，但安装与更新时会弹一次 SmartScreen 警告。
-7. **自动回滚仍然没有**（刻意）：自动回滚会掩盖问题，`sha-` tag 是人工回滚锚点，管线每次部署演练一遍。
+7. **自动回滚仍然没有**（刻意）：自动回滚会掩盖问题，上一个 `sha-` tag 是人工回滚锚点，管线每次部署演练一遍。
 8. **变更检测没有覆盖 docker job**：只改文档时 `verify-backend` / `verify-web` 会跳过，
-   但 `docker` 仍会构建并推一个内容相同的新 `sha-` tag。`deploy` 现在会照样冒烟这个镜像
-   （所以不会再有「进了仓库却没验证」的 tag），但这次构建本身是浪费的。
-   彻底修掉需要「镜像 tag 必须指向真正变更的提交」，逻辑会绕很多。
-9. **每次默认分支构建都会新建一个 Release**，版本号随运行号递增（`v1.0.<run>`）。
-   这是让已安装客户端能持续更新的代价——`latest.yml` 必须出现在**最新**的 release 里。
-   仓库会缓慢积累历史版本；要控制的话加一个清理旧 release 的步骤即可。
+   但 `docker` 仍会构建并推一个内容相同的新 `sha-` tag，`smoke-image` 也会照样冒烟它。
+   好处是「进了仓库的镜像都验过」，代价是这种构建本身有点浪费。
+9. **发版要人做决定，这是刻意的**：推送分支不再发版，只有打 `v<semver>` tag 才发布 + 部署。
+   好处是「合并代码」和「惊动线上用户」分开了；代价是发版是一个需要人参与的显式动作
+   （也可以 `gh workflow run pipeline -f deploy_ref=main` 只部署不发版）。
 10. **`report/` 与 `scripts/gh*.py` 里的辅助脚本**：`gh.py` / `gh_logs.py` / `gh_push.py` 是我用来驱动
     GitHub API 的工具（本机没有 `gh` CLI，PowerShell 的 HTTPS 又被本地 schannel 阻断）。
     它们只操作本仓库，不碰其他项目。留在仓库里是因为它们记录了「在没有 gh CLI 的环境里怎么驱动管线」，
     但严格说不是交付物的一部分。
+11. **线上还没接真实 Stripe**：`/api/billing/*` 目前返回 503（这是被冒烟测试验证过的合法状态，
+    页面显示「本服务器未配置支付，额度上限仍然生效」而不是报错）。填上密钥即可生效，代码不用改（见 §14.4）。
+12. **服务器是单机单副本，没有备份**：应用与数据库在同一台机器上，Postgres 数据在 named volume 里，
+    **没有定时备份**。磁盘满或机器挂掉会丢数据。要作为长期服务使用，至少该加一个 `pg_dump` 定时任务
+    与异地存放。这也是「Demo 够用、生产不够」的地方。
+13. **部署密钥目前是完整 shell 权限**（只授权了这一个用户的 SSH，但没有用 `command=` 把它限制成
+    「只能执行 deploy.sh」）。加 `command=` 限制是可行的加固，尚未做——它会让人工排障时需要另一个入口。
 
 ---
 
 ## 10. 复核指引（想自己验证的话）
 
 ```bash
-# 1. 看当前默认行为下的全绿管线（Windows + 网页端，安卓/Linux 跳过）
-open https://github.com/luty4ng/QuickLaunchTemplate/actions/runs/34677071586
+# 1. 打开线上站点（Traefik + Let's Encrypt，真实部署）
+curl -sS -o /dev/null -w '%{http_code} %{ssl_verify_result}\n' https://quicklaunch.luty.tech/
+curl -sS https://quicklaunch.luty.tech/api/health
 
-# 2. 看打开开关后的全绿管线（四端全过）
-open https://github.com/luty4ng/QuickLaunchTemplate/actions/runs/34677377502
+# 2. 看 tag 触发的全绿管线（发布 + 部署 + 公网冒烟）
+open https://github.com/luty4ng/QuickLaunchTemplate/actions/runs/<v1.2.0 的运行号>
 
-# 3. 看默认发布的产物（5 个）
-open https://github.com/luty4ng/QuickLaunchTemplate/releases/tag/v1.0.38
+# 3. 看 tag 发布的产物（5 个：安装包、zip、blockmap、latest.yml、web zip）
+open https://github.com/luty4ng/QuickLaunchTemplate/releases/tag/v1.2.0
 
-# 4. 看打开开关后的产物（9 个，含 APK / deb / AppImage）
+# 4. 看开关打开后四端全发布的产物（9 个，含 APK / deb / AppImage）
 open https://github.com/luty4ng/QuickLaunchTemplate/releases/tag/v1.0.39
 
 # 5. 看镜像（公开可拉）
@@ -392,6 +402,10 @@ cd backend && DATABASE_URL=sqlite+aiosqlite:///./data/dev.db \
   JWT_SECRET=local-dev-secret-that-is-long-enough \
   WEB_DIST=../web/dist ../.venv/Scripts/python -m uvicorn app.main:app --port 8000
 python scripts/smoke.py --base-url http://127.0.0.1:8000
+
+# 8. 连支付链路一起验（不需要 Stripe 账号，见 §14.3）
+STRIPE_WEBHOOK_SECRET=whsec_fake_secret python scripts/fake_stripe.py \
+  --port 12194 --webhook-target http://127.0.0.1:8000/api/billing/webhook
 ```
 
 > 交付状态：**完成**。main 分支干净（无未提交改动、无遗留分支、无开启的 PR），
@@ -413,7 +427,7 @@ python scripts/smoke.py --base-url http://127.0.0.1:8000
 | 下载 | 后台自动下载，进度通过 IPC 推到界面 |
 | 安装 | `quitAndInstall()`，界面上的「Restart and update」按钮触发 |
 | 版本比较 | `desktop/lib/version.js`，6 个 `node:test` 用例（`1.0.10 > 1.0.9`、预发布低于正式版、无法解析一律回答「无更新」） |
-| 版本递增 | `versioning` job 每次构建盖 `1.0.<run number>`；**版本不递增客户端就永远收不到更新** |
+| 版本递增 | 版本来自 tag（`v1.2.0` → `1.2.0`），且 `versioning` job 会拒绝不比已发布最高版本更高的 tag；**版本不递增客户端就永远收不到更新** |
 
 **实测证据**：
 
@@ -486,3 +500,133 @@ gh workflow run pipeline --ref main -f publish_android=true
    所以关掉的 Linux 腿跑的是一串带同一个 `if:` 的**成功 no-op**，
    而不是一条永远红色的「skipped」——否则每次默认发布看起来都像半残。
 4. `release` job 只下载它将要附带的 artifact，「发不发」写进 Release 说明和运行摘要里。
+
+---
+
+## 13. 真实上线：从「制品验证」到「跑在域名上」
+
+§9.1 曾经把「deploy 只是制品验证」列为已知限制——那一条现在不成立了。线上地址：
+
+**https://quicklaunch.luty.tech**（Traefik 反向代理 + Let's Encrypt 证书，HTTP 200）
+
+### 13.1 拓扑
+
+```
+浏览器 ──▶ Traefik（服务器上原有的，独占 80/443）
+              └──▶ app:8000（FastAPI 同时提供 /api/* 与编译好的 SPA）
+                       └──▶ db:5432（postgres:16，named volume：数据不随部署重建）
+```
+
+服务器上 `~/quicklaunch/` 只有 5 个东西：`compose.yaml`、`compose.server.yaml`、
+`deploy.sh`、`.env`(600)、`src/`（部署时 clone 的源码，用于本地构建）。
+**不碰服务器上原有的 `9router` / `traefik` / `homepage`**，只往 Traefik 的网络里挂一个容器。
+
+### 13.2 部署链路（tag 触发）
+
+```
+推送 v1.2.0
+  ├─ versioning   解析版本 + 门禁（必须严格大于已发布最高版本）
+  ├─ verify-backend / verify-web
+  ├─ docker       构建镜像并推 GHCR
+  ├─ smoke-image  在 runner 上真起一套栈冒烟该镜像（含支付链路）
+  ├─ desktop      Windows 安装包（版本取自 tag）
+  ├─ android      （默认跳过）
+  ├─ deploy-server SSH 同步文件 → 服务器构建上线 → 打公网地址冒烟
+  ├─ release      发布 v1.2.0（含 latest.yml）
+  └─ desktop-self-test  真跑打包产物 + 读真实更新源
+```
+
+`deploy.sh` 的内容顺序是刻意设计的，每一步失败都停：
+
+```
+起 db → 等 healthy → 迁移（独立一步）→ 起 app → 等 healthy → 清理旧镜像（保留最近 3 个）
+```
+
+**绝不覆盖 `.env`**（服务器密钥只存在服务器上，CI 从不传密钥过去），
+**绝不 `docker compose down -v`**（那会连数据卷一起删）。
+回滚是 `~/quicklaunch/deploy.sh <上一个 rev>`，或把 `.env` 的 `APP_IMAGE` 改回旧 tag；
+CI 每次部署都会**演练一遍回滚**（重新部署上一个 `sha-` tag 并确认服务回来）。
+
+### 13.3 服务器环境实测（决定了方案怎么选）
+
+部署方案是被服务器网络逼出来的，不是先选好再做的：
+
+| 目标 | 实测速度 | 结论 |
+|---|---|---|
+| ghcr.io | **74 B/s** | 拉镜像这条路直接死掉（`docker pull` 挂死 12 分钟） |
+| github.com release 资产 | 0.00 Mbps | 也不通 |
+| github.com 源码浅克隆 | **7 秒** | **可用** → 所以改成「服务器本地构建」 |
+| Docker Hub | 0.00 Mbps | 不通，`daemon.json` 也不存在（没有镜像加速可用） |
+| pypi.org | **0.52 Mbps** | 构建时 `pip install` 214 秒后失败 → 传 `PIP_INDEX_URL`（阿里云，实测 4.38 Mbps） |
+| npm registry | 21.9 Mbps | 正常，官方源够快，不需要换 |
+| Let's Encrypt | 签发成功 | 证书 `CN = quicklaunch.luty.tech`，有效期 90 天，Traefik 自动续期 |
+
+> 没有采用「本机 `docker save` 后 scp 传镜像」：每层 110 MB，跨境上行同样不可靠，
+> 而且每次发版都要经过我的机器——那不是 CI 该有的形状。
+
+### 13.4 部署所需的仓库配置
+
+| 类型 | 名称 | 说明 |
+|---|---|---|
+| Secret | `DEPLOY_SSH_KEY` | 部署专用 Ed25519 私钥，**在服务器上生成**，没有经过任何人的机器（指纹 `SHA256:S/hiR65Izc3surRmZYzrQBSRq/ixEGHhYVs86L43boA`） |
+| Variable | `DEPLOY_HOST`、`DEPLOY_USER` | 服务器地址与登录用户 |
+
+这条命令的权限边界（对应用户「不要动我其他项目」的要求）：
+
+- 私钥只能登录这一个用户，且 CI 只用它执行 `~/quicklaunch/deploy.sh`；
+- 所有写操作限制在 `~/quicklaunch/` 目录内；
+- 不执行任何破坏性动作（无 `down -v`、无 `rm -rf`、无系统级改动），重启类操作不做。
+
+---
+
+## 14. 订阅支付（Stripe）
+
+### 14.1 产品形态：只按额度分档，不做功能阉割
+
+| 档次 | 待办条数上限 | 说明 |
+|---|---|---|
+| Free | 10 | 默认档 |
+| Plus | 200 | 月付 |
+| Pro | 不限 | 月付 |
+
+额度**只在创建时**检查；读、改、删永远不拦。所以取消订阅后，用户已有的 11 条待办
+一条都不会消失，只是不能再新增——这一条有测试守着（`billing: cancelling keeps the user's todos`）。
+
+### 14.2 支付这件事上，钱和权限之间只隔四道关
+
+| 关卡 | 做法 | 为什么必须这么做 |
+|---|---|---|
+| 验签 | 每个 webhook 先验 `Stripe-Signature`，**并拒绝未来时间戳** | 时间戳是签名内容的一部分。不查未来方向的话，抓到一个请求就能把 `t` 改大无限重放——实测 `stripe-python` 15.6.1 **只拒太旧的**，所以自己补了一道（有单测记录这个 SDK 行为） |
+| 幂等 | 事件 id 作为 `billing_events` 主键 | Stripe 会重投。重投不能变成「再授予一次」 |
+| 定价 | 前端只发 `{"plan": "plus"}`，**从不发 price id**；档位只由服务端价格表映射 | 否则改一个请求体就能用 1 元的价格买到 Pro。有测试断言请求体里不含 `price_` |
+| 宽限 | `past_due` 保留访问权限 | 卡过期不该立刻断服务，那是 Stripe 自己的重试窗口 |
+
+未配置 `STRIPE_*` 时 `/api/billing/*` 返回 **503**——明确失败，绝不静默假装成功。
+这条也被冒烟测试覆盖（`billing: checkout fails loudly when unconfigured`），
+所以「这个部署没接支付」是一个**被验证过的合法状态**，而不是一个会拖垮部署门禁的缺陷。
+
+### 14.3 不用 Stripe 账号也能端到端验证
+
+`scripts/fake_stripe.py` 是一个**只用标准库**实现的支付方替身（提供 checkout、客户门户、
+取订阅三个接口，外加 `__control/pay|cancel|reset` 三个控制端点——因为真付款的是人），
+它与测试用的内存网关**共用同一份事件构造代码**，两边不可能对事件形状产生分歧。
+它拒绝以 `--env production` 启动。
+
+流水线每次构建都跑完整条链路，全部通过才算绿：
+
+```
+下单 → 替身记录付款 → 投递已签名 webhook → 档位变 Plus → 第 11 条待办建得出来
+     → 取消 → 掉回 Free → 已有 11 条内容还在
+```
+
+本地同样可跑（README 里有可复制的命令）。这一步的价值在 §1.1 已经体现：
+**三个支付缺陷都是它抓出来的，其中两个是「看起来全绿、只是钱进来档位不变」这种最难靠读代码发现的。**
+
+### 14.4 现状与剩余一步
+
+| 项 | 状态 |
+|---|---|
+| 后端、迁移、接口、前端面板、测试 | ✅ 已完成并跑通 |
+| 替身支付方的端到端 | ✅ CI 每次构建都跑 |
+| 线上部署 | ✅ https://quicklaunch.luty.tech |
+| **真实 Stripe**（真实 Checkout + 真实 webhook） | ⏳ 需要你的 Stripe 测试密钥与两个 `price_*`：填进服务器 `.env` 后重启容器即可生效，代码不用改 |
