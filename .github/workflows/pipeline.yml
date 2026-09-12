@@ -19,6 +19,15 @@ on:
           release is newer than - that is how the update path is tested.
         required: false
         type: string
+      draft:
+        description: >-
+          Publish this build as a draft release. Use together with a low version
+          to test "an update is available": the build runs 0.0.1 while the feed
+          still offers the published release, and nothing is added to the
+          downloads page.
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -873,6 +882,7 @@ jobs:
         with:
           tag_name: v${{ needs.versioning.outputs.version }}
           name: QuickLaunch ${{ needs.versioning.outputs.version }}
+          draft: ${{ inputs.draft || false }}
           body: |
             Desktop build **${{ needs.versioning.outputs.version }}** from `${{ github.sha }}`.
 
