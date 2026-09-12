@@ -1,7 +1,16 @@
 import { useCallback, useEffect, useState } from 'react'
 
-import { ApiError, api, getApiBase, setApiBase, type Todo, type User } from './api'
+import {
+  ApiError,
+  api,
+  getApiBase,
+  setApiBase,
+  type BillingMe,
+  type Todo,
+  type User,
+} from './api'
 import { AuthPanel } from './components/AuthPanel'
+import { PlanPanel } from './components/PlanPanel'
 import { TodoList } from './components/TodoList'
 import { UpdateBanner } from './components/UpdateBanner'
 
@@ -12,6 +21,7 @@ export function App() {
   const [booting, setBooting] = useState(true)
   const [health, setHealth] = useState<Health>({ state: 'checking' })
   const [todos, setTodos] = useState<Todo[]>([])
+  const [billing, setBilling] = useState<BillingMe | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [apiBase, setApiBaseState] = useState(getApiBase())
   const [showSettings, setShowSettings] = useState(false)
@@ -33,6 +43,16 @@ export function App() {
     }
   }, [])
 
+  const refreshBilling = useCallback(async () => {
+    try {
+      setBilling(await api.billingMe())
+    } catch (cause) {
+      // Billing is optional: an unconfigured server answers 503, and the rest of
+      // the app must keep working.
+      if (!(cause instanceof ApiError && cause.status === 401)) setBilling(null)
+    }
+  }, [])
+
   useEffect(() => {
     let cancelled = false
     void (async () => {
@@ -47,6 +67,16 @@ export function App() {
         if (cancelled) return
         setUser(me)
         await refreshTodos()
+        await refreshBilling()
+        // Returning from the provider: the plan is granted by a webhook, which
+        // may land a moment after the redirect, so re-check a few times instead
+        // of assuming it already happened.
+        if (window.location.search.includes('billing=success')) {
+          for (let attempt = 0; attempt < 5 && !cancelled; attempt += 1) {
+            await new Promise((resolve) => setTimeout(resolve, 1500))
+            await refreshBilling()
+          }
+        }
       } catch {
         // Not signed in yet - that is the normal first-run state.
       } finally {
@@ -56,7 +86,7 @@ export function App() {
     return () => {
       cancelled = true
     }
-  }, [refreshTodos])
+  }, [refreshTodos, refreshBilling])
 
   const signIn = async (mode: 'login' | 'register', email: string, password: string) => {
     setError(null)
@@ -64,6 +94,7 @@ export function App() {
       const me = mode === 'login' ? await api.login(email, password) : await api.register(email, password)
       setUser(me)
       await refreshTodos()
+      await refreshBilling()
     } catch (cause) {
       setError(describe(cause))
     }
@@ -78,6 +109,7 @@ export function App() {
     }
     setUser(null)
     setTodos([])
+    setBilling(null)
   }
 
   const addTodo = async (title: string) => {
@@ -85,8 +117,11 @@ export function App() {
     try {
       const created = await api.createTodo(title)
       setTodos((current) => [created, ...current])
+      // The quota moved, so the "3 of 10" line and the upgrade prompt must too.
+      await refreshBilling()
     } catch (cause) {
       setError(describe(cause))
+      if (cause instanceof ApiError && cause.status === 402) await refreshBilling()
     }
   }
 
@@ -105,6 +140,7 @@ export function App() {
     try {
       await api.deleteTodo(id)
       setTodos((current) => current.filter((todo) => todo.id !== id))
+      await refreshBilling()
     } catch (cause) {
       setError(describe(cause))
     }
@@ -141,15 +177,20 @@ export function App() {
       {booting ? (
         <div className="card empty">Loading...</div>
       ) : user ? (
-        <div className="card">
-          <TodoList
-            todos={todos}
-            remaining={remaining}
-            onCreate={addTodo}
-            onPatch={patchTodo}
-            onDelete={removeTodo}
-          />
-        </div>
+        <>
+          <div className="card">
+            <PlanPanel billing={billing} onRefresh={refreshBilling} />
+          </div>
+          <div className="card">
+            <TodoList
+              todos={todos}
+              remaining={remaining}
+              onCreate={addTodo}
+              onPatch={patchTodo}
+              onDelete={removeTodo}
+            />
+          </div>
+        </>
       ) : (
         <AuthPanel onSubmit={signIn} />
       )}

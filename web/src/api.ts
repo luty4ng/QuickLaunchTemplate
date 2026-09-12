@@ -159,6 +159,34 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   return (await response.json()) as T
 }
 
+export type Quota = {
+  plan: string
+  /** null means unlimited. */
+  limit: number | null
+  used: number
+  remaining: number | null
+  can_create: boolean
+}
+
+export type Plan = {
+  id: 'plus' | 'pro'
+  name: string
+  limit: number | null
+  price_id: string
+  available: boolean
+}
+
+export type BillingMe = {
+  plan: string
+  quota: Quota
+  status: string | null
+  current_period_end: string | null
+  cancel_at_period_end: boolean
+  has_customer: boolean
+  plans: Plan[]
+  billing_enabled: boolean
+}
+
 export const api = {
   health: () => request<{ status: string; database: string; version: string }>('/api/health'),
 
@@ -178,4 +206,18 @@ export const api = {
       body: JSON.stringify(patch),
     }),
   deleteTodo: (id: string) => request<void>(`/api/todos/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+
+  billingMe: () => request<BillingMe>('/api/billing/me'),
+  /** The plan name, not a price: what it costs is decided by the server. */
+  startCheckout: (plan: Plan['id']) =>
+    request<{ url: string }>('/api/billing/checkout', {
+      method: 'POST',
+      body: JSON.stringify({ plan }),
+    }),
+  openPortal: () => request<{ url: string }>('/api/billing/portal', { method: 'POST' }),
+  /** Reconcile with the provider, for when a webhook never arrived. */
+  syncBilling: () =>
+    request<{ plan: string; status: string | null; changed: boolean }>('/api/billing/sync', {
+      method: 'POST',
+    }),
 }

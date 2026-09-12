@@ -276,3 +276,33 @@ button:disabled {
   padding: 6px 12px;
   font-size: 14px;
 }
+
+/* Plan and quota. Kept visually quieter than the todo list: it is context, not
+   the thing the user came to do - except when the quota is full, which is when
+   the upgrade button appears. */
+.plan {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 14px;
+}
+
+.plan-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.plan-row > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.plan button {
+  flex: none;
+  padding: 6px 12px;
+  font-size: 14px;
+}
+
