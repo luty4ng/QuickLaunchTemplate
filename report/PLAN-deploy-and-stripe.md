@@ -399,7 +399,60 @@ networks:
 **不采用的方案**：从本机 `docker save` 后 scp 传镜像——每层 110 MB，跨境上行同样不可靠，
 且每次发版都要经过我的机器，不适合作为 CI 路径。
 
-### 后续阶段（阶段 1 打通后继续）
+### ✅ 阶段 1｜真实部署 —— **已完成（2026-09-12）**
+
+**线上地址：https://quicklaunch.luty.tech（HTTP 200，Let's Encrypt 证书有效）**
+
+最终链路（tag 驱动，已实测跑通）：
+
+```
+推送 v1.1.0
+  ├─ versioning：解析版本 + 门禁（必须严格大于已发布最高版本）
+  ├─ verify-backend / verify-web
+  ├─ docker：构建镜像推 GHCR
+  ├─ smoke-image：在 runner 上冒烟该镜像
+  ├─ desktop：打包（版本取自 tag）
+  ├─ deploy-server：SSH 同步文件 → 服务器构建并上线 → 公网冒烟 17/17
+  ├─ release：发布 v1.1.0（含 latest.yml）
+  └─ desktop-self-test：真跑打包产物 + 读真实更新源
+```
+
+实测证据（run [#34689001392](https://github.com/luty4ng/QuickLaunchTemplate/actions/runs/34689001392)）：
+
+| 项 | 结果 |
+|---|---|
+| Release | `v1.1.0`（非 draft），含安装包 + zip + blockmap + **latest.yml** |
+| 服务器运行版本 | `quicklaunch:0970e6d`，**与 tag 指向的提交一致** |
+| 容器 | app healthy、db healthy（数据卷未重建，数据保留） |
+| 公网冒烟 | **17/17 通过**（含注册/登录/增删改查/越权隔离） |
+| 其他服务 | 未受影响 |
+
+#### 阶段 1 中遇到并解决的环境问题（都已实测定位）
+
+| 现象 | 根因 | 处理 |
+|---|---|---|
+| `docker pull` 挂死 12 分钟 | 服务器到 **ghcr.io 只有 74 B/s**（`ghcr.io` 解析到境外 IP） | 改为**服务器本地构建**：源码从 GitHub clone 只要 7 秒 |
+| 构建时 `pip install` 214 秒后失败 | 服务器到 **pypi.org 仅 0.52 Mbps** | Dockerfile 加 `ARG PIP_INDEX_URL`（默认官方源），服务器构建传阿里云镜像（实测 4.38 Mbps）；npm 官方源有 21.9 Mbps，无需替换 |
+| 版本门禁拦掉了合法的 v1.1.0（两次） | ① 内联 shell 里的 `gh` CLI 静默失败；② `versioning` job 没 checkout 仓库 | 抽成 `scripts/check_version.py`（可在本地测试，已用真实发布列表验证） |
+| 冒烟首次报 4.68 秒 | 首次请求含 DNS+TCP+TLS 冷启动；稳态 42-123 ms | 部署验收用 `--health-budget-ms 8000` |
+
+#### 服务器侧现状
+
+```
+~/quicklaunch/
+  ├── compose.yaml            # 由 CI 每次部署同步（版本化）
+  ├── compose.server.yaml     # Traefik 接入覆盖文件
+  ├── deploy.sh               # 部署脚本（CI 调用，也可人工执行）
+  ├── .env                    # 600，密钥仅存在于此，CI 从不覆盖
+  └── src/                    # 由 deploy.sh 拉取的源码（用于本地构建）
+```
+
+服务器上另有 `authorized_keys.bak.*` 两个备份，以及本次部署引用的 Docker 卷 `quicklaunch_db-data`。
+
+**回滚**：`~/quicklaunch/deploy.sh <上一个 rev>`，或把 `.env` 的 `APP_IMAGE` 改回旧 tag 后
+`docker compose -f compose.yaml -f compose.server.yaml up -d app`。
+
+### 后续阶段
 
 1. **阶段 1（续）**：选定 registry 方案 → 修 `deploy.sh` 的镜像来源 → 部署 → 公网冒烟 →
    加 `deploy-server` job（tag 触发）+ tag 门禁 + 回滚脚本。
