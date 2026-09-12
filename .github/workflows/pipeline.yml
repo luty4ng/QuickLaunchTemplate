@@ -273,21 +273,25 @@ jobs:
           python3 - <<'PY'
           import ast, pathlib, sys
 
-          # Everything it imports must be stdlib or its own sibling.
+          # Both files, because the core is imported by the entry point: a
+          # third-party import there breaks the bare `python3` run just as badly,
+          # and checking only the entry point would call that a pass.
+          files = ["scripts/fake_stripe.py", "scripts/fake_stripe_core.py"]
           allowed = {"fake_stripe_core"}
-          src = pathlib.Path("scripts/fake_stripe.py").read_text()
-          imported = set()
-          for node in ast.walk(ast.parse(src)):
-              if isinstance(node, ast.Import):
-                  imported.update(alias.name.split(".")[0] for alias in node.names)
-              elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
-                  imported.add(node.module.split(".")[0])
 
-          third_party = imported - allowed - set(sys.stdlib_module_names)
-          if third_party:
-              print(f"::error::fake_stripe.py imports non-stdlib modules: {sorted(third_party)}")
-              sys.exit(1)
-          print("fake_stripe.py imports only stdlib:", sorted(imported))
+          for path in files:
+              imported = set()
+              for node in ast.walk(ast.parse(pathlib.Path(path).read_text())):
+                  if isinstance(node, ast.Import):
+                      imported.update(alias.name.split(".")[0] for alias in node.names)
+                  elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+                      imported.add(node.module.split(".")[0])
+
+              third_party = imported - allowed - set(sys.stdlib_module_names)
+              if third_party:
+                  print(f"::error::{path} imports non-stdlib modules: {sorted(third_party)}")
+                  sys.exit(1)
+              print(f"{path} imports only stdlib:", sorted(imported))
           PY
 
   verify-web:
@@ -432,6 +436,11 @@ jobs:
     # checkout over HTTP, a signed webhook, entitlement, quota lifted - be
     # exercised on every build without an account, credentials or a human with a
     # card. They are obviously fake values, and they never reach the deployment.
+    #
+    # STRIPE_WEBHOOK_SECRET below is read by BOTH sides: the workflow exports it
+    # into the container, and the fake provider inherits it as the secret it
+    # signs deliveries with. Keep it that way - these were once two separate
+    # literals, and every webhook failed signature verification with a 500.
     env:
       JWT_SECRET: deploy-time-secret-that-is-long-enough-0001
       POSTGRES_PASSWORD: ci-postgres-password
@@ -521,18 +530,25 @@ jobs:
       - name: smoke test the live deployment
         run: python3 scripts/smoke.py --base-url http://127.0.0.1:8000 --health-budget-ms 1000
 
-      # Both sides of the webhook conversation, printed whatever the outcome.
-      # A webhook that never arrives and one that arrives but grants nothing look
-      # identical from the smoke test's side, and the difference is the whole
-      # diagnosis.
+      # Both sides of the webhook conversation. A webhook that never arrives, one
+      # that arrives and is rejected, and one that arrives but grants nothing all
+      # look identical from the smoke test's side - the deliveries and the plan
+      # change are what tell them apart. On failure everything is printed; on
+      # success just the deliveries, as a record that the path really ran.
       - name: payment provider and application logs
         if: always()
         run: |
           echo "===== fake provider (deliveries and control calls) ====="
+          grep -E "delivered|HINT" /tmp/fake-stripe.log || echo "(no deliveries)"
+
+      - name: full logs from both sides (failures only)
+        if: failure()
+        run: |
+          echo "===== full provider log ====="
           cat /tmp/fake-stripe.log || echo "(no provider log)"
           echo
           echo "===== application (billing responses) ====="
-          docker compose -f compose.yaml logs --tail 40 app || true
+          docker compose -f compose.yaml logs --tail 60 app || true
 
       - name: verify the image healthcheck agrees
         run: |

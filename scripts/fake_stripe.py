@@ -24,12 +24,18 @@ test suite's in-memory gateway so the two cannot disagree about event shapes.
 
     python scripts/fake_stripe.py --port 12194 \\
         --webhook-target http://127.0.0.1:8000/api/billing/webhook
+
+It signs with `STRIPE_WEBHOOK_SECRET` when that is set - the same variable the
+application verifies with - so the two sides agree by construction rather than by
+two matching literals.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
 import re
 import sys
 import urllib.error
@@ -40,7 +46,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from fake_stripe_core import FakeStripeState  # noqa: E402
+from fake_stripe_core import FakeStripeState, default_webhook_secret  # noqa: E402
 
 # Above Windows' reserved TCP range (12094-12193 on the machine this was written
 # on): binding inside a reserved range fails with WinError 10013, which reads
@@ -50,11 +56,22 @@ DEFAULT_PORT = 12194
 # Where checkout urls point, so the smoke test can find the control endpoints from
 # the url the application hands back. Set in main().
 PUBLIC_BASE = f"http://127.0.0.1:{DEFAULT_PORT}"
-STATE = FakeStripeState(base_url=PUBLIC_BASE)
+WEBHOOK_SECRET = default_webhook_secret()
+STATE = FakeStripeState(base_url=PUBLIC_BASE, webhook_secret=WEBHOOK_SECRET)
 WEBHOOK_TARGET: str | None = None
 
 SESSION_RE = re.compile(r"^/v1/checkout/sessions/([^/]+)$")
 SUBSCRIPTION_RE = re.compile(r"^/v1/subscriptions/([^/]+)$")
+
+
+def fingerprint(secret: str) -> str:
+    """A short, non-reversible id for a secret, safe to print in a public log."""
+    return hashlib.sha256(secret.encode()).hexdigest()[:8]
+
+
+def new_state() -> FakeStripeState:
+    """A fresh state that keeps signing with the configured secret."""
+    return FakeStripeState(base_url=PUBLIC_BASE, webhook_secret=WEBHOOK_SECRET)
 
 
 def form(payload: bytes, content_type: str) -> dict[str, str]:
@@ -110,6 +127,16 @@ class Handler(BaseHTTPRequestHandler):
         # a webhook that returns 200 while granting nothing is the failure this
         # whole script exists to catch.
         print(f"fake-stripe: delivered {event.get('type')} -> {code} {body[:200]}", flush=True)
+        if code == 400 and "signature" in body:
+            # The one mismatch that is invisible from the application's side: both
+            # processes look correctly configured, and only the pair is wrong.
+            print(
+                "fake-stripe: HINT - the application rejected the signature. It verifies "
+                f"with its own STRIPE_WEBHOOK_SECRET; this process signs with one ending "
+                f"in sha256:{fingerprint(STATE.webhook_secret)}. Make sure both read the "
+                "same value.",
+                flush=True,
+            )
         return code, body
 
     # -- API ---------------------------------------------------------------
@@ -181,7 +208,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"delivered": delivered})
 
         if path == "/__control/reset":
-            STATE = FakeStripeState(base_url=PUBLIC_BASE)
+            STATE = new_state()
             return self._json(200, {"reset": True})
 
         return self._json(404, {"error": {"message": f"fake stripe has no {path}"}})
@@ -220,6 +247,14 @@ def main() -> int:
         default="",
         help="where to deliver signed events, e.g. http://127.0.0.1:8000/api/billing/webhook",
     )
+    parser.add_argument(
+        "--webhook-secret",
+        default=default_webhook_secret(),
+        help=(
+            "secret to sign deliveries with; defaults to $STRIPE_WEBHOOK_SECRET, "
+            "which is what the application verifies with"
+        ),
+    )
     parser.add_argument("--env", default="test", help="refuses to run as 'production'")
     args = parser.parse_args()
 
@@ -230,13 +265,20 @@ def main() -> int:
         print("--port 0 is not supported: checkout urls would be unreachable", file=sys.stderr)
         return 2
 
-    global PUBLIC_BASE, STATE, WEBHOOK_TARGET
+    global PUBLIC_BASE, STATE, WEBHOOK_SECRET, WEBHOOK_TARGET
     WEBHOOK_TARGET = args.webhook_target or None
+    WEBHOOK_SECRET = args.webhook_secret
     PUBLIC_BASE = f"http://{args.host if args.host != '0.0.0.0' else '127.0.0.1'}:{args.port}"
-    STATE = FakeStripeState(base_url=PUBLIC_BASE)
+    STATE = new_state()
 
     print(f"fake stripe on http://{args.host}:{args.port}", flush=True)
     print(f"checkout urls will be {PUBLIC_BASE}/...", flush=True)
+    source = "$STRIPE_WEBHOOK_SECRET" if os.environ.get("STRIPE_WEBHOOK_SECRET") else "the default"
+    print(
+        f"signing webhooks with the secret from {source} "
+        f"(sha256:{fingerprint(WEBHOOK_SECRET)}, {len(WEBHOOK_SECRET)} chars)",
+        flush=True,
+    )
     if WEBHOOK_TARGET:
         print(f"delivering webhooks to {WEBHOOK_TARGET}", flush=True)
     else:

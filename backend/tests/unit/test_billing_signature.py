@@ -115,10 +115,69 @@ class TestRealSignatureVerification:
             )
         assert "stripe" in inspect.getsource(verify_signature)
 
+    def test_the_gateway_reports_sdk_rejections_as_value_errors(self) -> None:
+        """The API maps ValueError to 400; the SDK raises something that is not one.
+
+        `SignatureVerificationError` derives from `StripeError`, not from
+        ValueError, so before this translation existed a wrong secret returned
+        500 - and Stripe retries a 500 forever. Caught by the pipeline: the
+        container logged `SignatureVerificationError: No signatures found
+        matching the expected signature for payload` while the fake provider
+        recorded `-> 500`.
+        """
+        from app.billing.gateway import verify_signature
+
+        for bad in (build(PAYLOAD, secret="whsec_someone_else"), "garbage", "t=123", ""):
+            with pytest.raises(ValueError):  # noqa: PT011 - the type is the assertion
+                verify_signature(PAYLOAD, bad, SECRET, TOLERANCE)
+
+        # ...and a good signature still verifies through the same entry point.
+        assert verify_signature(PAYLOAD, build(PAYLOAD), SECRET, TOLERANCE)["id"] == "evt_unit_1"
+
     def test_a_malformed_header_is_rejected(self) -> None:
         for bad in ("", "garbage", "t=123", "v1=abc"):
             with pytest.raises((stripe.SignatureVerificationError, ValueError)):
                 stripe.Webhook.construct_event(PAYLOAD, bad, SECRET, tolerance=TOLERANCE)
+
+
+class TestTheFakeProviderSignsWhatTheApplicationVerifies:
+    """The invariant the pipeline broke, kept broken-proof by these tests.
+
+    Both halves were individually right - the fake signed a payload, the
+    application verified one - and the pair still rejected every delivery,
+    because CI started the fake with its built-in secret while the container was
+    configured from the workflow's `env:` block. Now both read the same variable,
+    `STRIPE_WEBHOOK_SECRET`, which is what the application already used.
+    """
+
+    def test_the_default_secret_follows_the_environment(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from app.billing.fake import FakeStripeState
+
+        monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_set_by_the_environment")
+        assert FakeStripeState().webhook_secret == "whsec_set_by_the_environment"
+
+    def test_the_fake_and_the_application_agree_without_being_told(self) -> None:
+        from app.billing.fake import FakeStripeState
+        from app.config import get_settings
+
+        assert FakeStripeState().webhook_secret == get_settings().stripe_webhook_secret, (
+            "the provider CI runs and the application it delivers to must read one secret"
+        )
+
+    def test_an_event_the_fake_signs_verifies_through_the_real_verifier(self) -> None:
+        """The pair, exercised end to end with the SDK doing the verification."""
+        from app.billing.fake import FakeStripeState
+        from app.billing.gateway import verify_signature
+
+        state = FakeStripeState()
+        payload = json.dumps(
+            {"id": "evt_pair", "type": "invoice.paid", "data": {"object": {"id": "in_1"}}}
+        ).encode()
+
+        event = verify_signature(payload, state.sign(payload), state.webhook_secret, TOLERANCE)
+
+        assert event["id"] == "evt_pair"
+        assert event["object"] == {"id": "in_1"}, "normalisation must survive the round trip"
 
 
 class TestEventNormalisation:

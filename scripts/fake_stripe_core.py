@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import os
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -23,6 +24,24 @@ from typing import Any
 
 class SignatureError(ValueError):
     """The signature did not verify, or the timestamp was too far off."""
+
+
+# The secret the fake signs with when nothing else is configured. Real runs take
+# `STRIPE_WEBHOOK_SECRET` from the environment - the same variable the
+# application verifies with - so the two sides cannot be given different values
+# by accident. They were, once: CI signed with this default while the container
+# verified the value from the workflow's `env:` block, and every webhook came
+# back 500 "No signatures found matching the expected signature for payload".
+DEFAULT_WEBHOOK_SECRET = "whsec_fake_secret"
+
+
+def default_webhook_secret() -> str:
+    """The signing secret, following the application's own configuration.
+
+    A factory rather than a constant so the environment is read when a state
+    object is built, not when this module is imported.
+    """
+    return os.environ.get("STRIPE_WEBHOOK_SECRET", "").strip() or DEFAULT_WEBHOOK_SECRET
 
 
 def as_datetime(value: Any) -> datetime | None:
@@ -65,7 +84,7 @@ class FakeStripeState:
     webhook arrive looking empty.
     """
 
-    webhook_secret: str = "whsec_fake_secret"
+    webhook_secret: str = field(default_factory=default_webhook_secret)
     tolerance: int = 300
     base_url: str = "http://127.0.0.1:12194"
     clock: Any = time.time

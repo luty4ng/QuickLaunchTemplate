@@ -183,7 +183,17 @@ def verify_signature(payload: bytes, signature: str, secret: str, tolerance: int
 
     import stripe
 
-    event = stripe.Webhook.construct_event(payload, signature, secret, tolerance=tolerance)
+    try:
+        event = stripe.Webhook.construct_event(payload, signature, secret, tolerance=tolerance)
+    except Exception as exc:  # noqa: BLE001 - see below
+        # The SDK raises `SignatureVerificationError`, which - unlike the fake
+        # gateway's `SignatureError` - does NOT derive from ValueError, so an
+        # uncaught one reached the caller as a 500. That is not just cosmetic:
+        # Stripe retries a 500 forever, and a 500 says "our fault, try again"
+        # about what is really a rejected request. Anything the SDK refuses to
+        # verify is a bad request, so it is translated here, once, for both
+        # gateways.
+        raise ValueError(f"{type(exc).__name__}: {exc}") from exc
     return normalise_event(event)
 
 
