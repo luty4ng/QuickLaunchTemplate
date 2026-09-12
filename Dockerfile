@@ -24,7 +24,14 @@ WORKDIR /wheels
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 COPY backend/requirements.txt ./
-RUN pip install --upgrade pip && pip install -r requirements.txt
+
+# Where pip resolves packages from. The default is the official index, so CI and
+# any normal build behave as before; a build host with poor routes to pypi.org
+# overrides it (see deploy/deploy.sh, which passes an Aliyun mirror measured at
+# 4.4 Mbps from the deployment server versus 0.5 Mbps for pypi.org).
+ARG PIP_INDEX_URL=https://pypi.org/simple
+RUN pip install --upgrade pip --index-url "$PIP_INDEX_URL" \
+    && pip install -r requirements.txt --index-url "$PIP_INDEX_URL"
 
 # ---------------------------------------------------------------------------
 # Stage 3 - runtime. Non-root, no build tools, one health check.
