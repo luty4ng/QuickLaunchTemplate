@@ -36,6 +36,7 @@ jobs:
     outputs:
       backend: ${{ steps.filter.outputs.backend }}
       web: ${{ steps.filter.outputs.web }}
+      deployable: ${{ steps.filter.outputs.deployable }}
     steps:
       - uses: actions/checkout@v7
       - uses: dorny/paths-filter@v4
@@ -52,6 +53,16 @@ jobs:
               - 'web/**'
               - 'desktop/**'
               - 'mobile/**'
+              - '.github/workflows/**'
+            # Anything whose result ends up inside the shipped image. `deploy`
+            # gates on this: pushing a new image and then not smoke testing it is
+            # how an unverified artifact becomes the one production pulls.
+            deployable:
+              - 'backend/**'
+              - 'web/**'
+              - 'scripts/smoke.py'
+              - 'Dockerfile'
+              - 'compose.yaml'
               - '.github/workflows/**'
 
   # ---------------------------------------------------------------------
@@ -248,7 +259,14 @@ jobs:
   deploy:
     name: cd / deploy + smoke test
     runs-on: ubuntu-latest
-    needs: docker
+    needs: [changes, docker]
+    # Smoke test every image that could actually be pulled. If the image was
+    # built from unchanged code, `docker` still pushes a new sha- tag, and that
+    # tag must not go untested just because the verify jobs were skipped.
+    if: |
+      always()
+      && needs.docker.result == 'success'
+      && (needs.changes.outputs.deployable == 'true' || github.event_name == 'workflow_dispatch')
 
     # compose.yaml interpolates these for every docker compose command, not just
     # the one that starts the stack - without them even `compose down` fails with
