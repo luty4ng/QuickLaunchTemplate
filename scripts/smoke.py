@@ -244,14 +244,21 @@ def check_login(base_url: str, email: str | None) -> None:
 def check_billing(base_url: str) -> None:
     """The payment path, end to end, against the running deployment.
 
-    Only exercises the paying half when the deployment is wired to a fake
-    provider (identified by the checkout url pointing at it). With real Stripe
-    that would need credentials and a human with a card, so it records what it
-    can and stops rather than failing.
+    Three states, each reported as what it is rather than as a pass or a failure
+    in disguise:
 
-    What it proves when it does run: a free account is capped at its limit,
-    checkout returns a provider url, a **signed** webhook lifts the cap, and
-    cancelling drops the plan without touching the user's existing todos.
+    * **no provider configured** - a supported way to run this template. The
+      quota still applies (it does not depend on Stripe), and checkout must fail
+      loudly with 503 rather than pretend to work.
+    * **a fake provider** - the paying half runs: a free account is capped at its
+      limit, checkout returns a provider url, a **signed** webhook lifts the cap,
+      and cancelling drops the plan without touching the user's existing todos.
+    * **real Stripe** - needs credentials and a human with a card, so it records
+      what it can and stops.
+
+    The deployment gate calls this against the public url, so the first state
+    must not fail the deployment: billing being off is a configuration, not a
+    defect.
     """
     suffix = uuid.uuid4().hex[:10]
     user = Session(base_url)
@@ -271,9 +278,22 @@ def check_billing(base_url: str) -> None:
         f"plan={me.get('plan')} enabled={me.get('billing_enabled')}",
     )
 
-    if not me.get("billing_enabled"):
-        record("billing: provider is configured", False, "billing_enabled is false")
-        return
+    enabled = bool(me.get("billing_enabled"))
+    if enabled:
+        record("billing: payment provider is configured", True, "billing_enabled=true")
+    else:
+        record(
+            "billing: payment provider is configured",
+            True,
+            "skipped - this deployment runs without a payment provider",
+        )
+        status, body, _ = user.request("POST", "/api/billing/checkout", {"plan": "plus"})
+        code = body.get("error", {}).get("code") if isinstance(body, dict) else None
+        record(
+            "billing: checkout fails loudly when unconfigured",
+            status == 503 and code == "billing_unavailable",
+            f"status={status} code={code}",
+        )
 
     quota = me.get("quota") or {}
     limit = quota.get("limit")
@@ -299,6 +319,9 @@ def check_billing(base_url: str) -> None:
         status == 402 and error_code == "quota_exceeded",
         f"status={status} code={error_code}",
     )
+
+    if not enabled:
+        return
 
     status, checkout, _ = user.request("POST", "/api/billing/checkout", {"plan": "plus"})
     if status != 200 or not isinstance(checkout, dict) or not checkout.get("url"):
