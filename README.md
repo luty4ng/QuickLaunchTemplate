@@ -42,18 +42,42 @@ every job runs for real, and the acceptance evidence is the run history.
 
 ## What actually ships
 
-| Target | Artifact | Produced by |
-|---|---|---|
-| Web + API | `ghcr.io/luty4ng/quicklaunchtemplate:sha-<commit>` (one image, both) | `docker` job |
-| Web (static) | `web-<sha>.zip` | `release` job |
-| Desktop | `QuickLaunch-Setup-<version>-x64.exe`, `QuickLaunch-<version>-win.zip`, `*.AppImage`, `*.deb` | `desktop` job |
-| Desktop updates | `latest.yml` + `*.blockmap` — the feed installed clients read | `desktop` job |
-| Android | `app-debug.apk` (installable, debug-signed) | `android` job |
+Two targets publish on every default-branch push; two are opt-in.
+
+| Target | Artifact | Default | Produced by |
+|---|---|---|---|
+| Windows desktop | `QuickLaunch-Setup-<version>-x64.exe`, `QuickLaunch-<version>-win.zip` | **on** | `desktop` job |
+| Desktop updates | `latest.yml` + `*.blockmap` — the feed installed clients read | **on** | `desktop` job |
+| Web + API | `ghcr.io/luty4ng/quicklaunchtemplate:sha-<commit>` (one image, both) | **on** | `docker` job |
+| Web (static) | `web-<sha>.zip` | **on** | `release` job |
+| Linux desktop | `*.AppImage`, `*.deb`, `latest-linux.yml` | off | `desktop` job |
+| Android | `app-debug.apk` (installable, debug-signed) | off | `android` job |
 
 Every default-branch build publishes a release tagged **`v<version>`**, versioned
 from the run number (`1.0.<run number>`). The version has to keep going up: the
 desktop client only accepts an update to a version **higher** than the one it is
 running.
+
+### Turning the opt-in targets on
+
+The switches are repository variables, so they apply until you change them:
+
+```
+gh variable set PUBLISH_ANDROID --body true     # build + publish the APK
+gh variable set PUBLISH_LINUX   --body true     # build + publish AppImage/deb
+gh variable set PUBLISH_ANDROID --body false    # off again
+```
+
+Or for a single run, without touching settings:
+
+```
+gh workflow run pipeline --ref main -f publish_android=true
+```
+
+The run summary and the release notes both state which targets were published.
+Linux and Android are off by default because this project ships a Windows client
+and a web app: building an APK on every push costs a runner minute and puts an
+artifact nobody installs on the downloads page.
 
 ## Desktop auto-update
 

@@ -384,7 +384,6 @@ python scripts/smoke.py --base-url http://127.0.0.1:8000
 ---
 
 ## 11. 桌面端自动更新（Windows）
-
 **能做什么**：已安装的 Windows 客户端启动时会静默检查更新，发现新版本就在后台下载，
 界面出现一个横条和**一个按钮**——点它即安装并重启到新版本。这就是「用户只需在客户端里一键拉取最新版」。
 
@@ -417,3 +416,54 @@ python scripts/smoke.py --base-url http://127.0.0.1:8000
 你在真机上装一次 `QuickLaunch-Setup-1.0.33-x64.exe`，等有新构建时点一下按钮即可确认。
 
 **注意**：未做代码签名，所以安装和更新时会弹一次 SmartScreen 警告；更新功能本身不受影响。
+
+---
+
+## 12. 发布哪些端（默认 + 开关）
+
+**默认只发 Windows 桌面端和网页端；Linux 桌面端与安卓端需要显式打开。**
+
+这个默认值来自实际需求：本项目只服务 Windows 客户，网页端是同一镜像的一部分；
+而每推送一次都构建一个 APK，既花掉约 1 分钟 runner 时间，又往下载页塞一个没人装的产物。
+
+| 目标 | 默认 | 产物 |
+|---|---|---|
+| Windows 桌面端 | **开** | `QuickLaunch-Setup-<version>-x64.exe`、`QuickLaunch-<version>-win.zip`、`latest.yml`、`blockmap` |
+| 网页端 + API | **开** | `ghcr.io/luty4ng/quicklaunchtemplate:sha-<commit>`、`web-<sha>.zip` |
+| Linux 桌面端 | 关 | `*.AppImage`、`*.deb`、`latest-linux.yml` |
+| 安卓端 | 关 | `app-debug.apk` |
+
+### 怎么开关
+
+用**仓库变量**（持久生效，改一次一直有效）：
+
+```bash
+gh variable set PUBLISH_ANDROID --body true    # 打开安卓
+gh variable set PUBLISH_LINUX   --body true    # 打开 Linux 桌面端
+gh variable set PUBLISH_ANDROID --body false   # 再关掉
+```
+
+或者只对**某一次运行**生效，不动设置：
+
+```bash
+gh workflow run pipeline --ref main -f publish_android=true
+```
+
+### 实测
+
+| 运行 | 开关状态 | 结果 |
+|---|---|---|
+| [#34677071586](https://github.com/luty4ng/QuickLaunchTemplate/actions/runs/34677071586) | 默认（无变量、无输入） | `android` **skipped**；`desktop (linux)` 绿色 no-op；Release [v1.0.38](https://github.com/luty4ng/QuickLaunchTemplate/releases/tag/v1.0.38) 只有 **5 个**资产：安装包、zip、blockmap、latest.yml、web zip |
+| [#34677377502](https://github.com/luty4ng/QuickLaunchTemplate/actions/runs/34677377502) | `publish_android=true publish_linux=true` | 四端全过；Release [v1.0.39](https://github.com/luty4ng/QuickLaunchTemplate/releases/tag/v1.0.39) 有 **9 个**资产，含 `app-debug.apk`、`.deb`、`.AppImage`、`latest-linux.yml` |
+
+**实现要点**（都是踩过的坑）：
+
+1. 开关在 `changes` job 里解析一次，作为 job output 广播，保证所有消费者看到同一个答案。
+2. 判断写成 `vars.PUBLISH_ANDROID == 'true'` 而不是直接用变量——仓库变量是字符串，
+   而字符串 `"false"` 在表达式里是**真值**，直接判断会导致开关永远打不开。
+3. GitHub Actions **没有**受支持的「按条件跳过某个 matrix 腿」的写法
+   （见 [SO 讨论](https://stackoverflow.com/questions/77186893) 与
+   [官方语法文档](https://docs.github.com/en/enterprise-server@3.7/actions/using-workflows/workflow-syntax-for-github-actions#jobsjob_idstrategy)），
+   所以关掉的 Linux 腿跑的是一串带同一个 `if:` 的**成功 no-op**，
+   而不是一条永远红色的「skipped」——否则每次默认发布看起来都像半残。
+4. `release` job 只下载它将要附带的 artifact，「发不发」写进 Release 说明和运行摘要里。
