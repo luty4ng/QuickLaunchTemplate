@@ -1,7 +1,51 @@
 # QuickLaunch 上线方案（部署到个人服务器 + Stripe 订阅支付）
 
-> 状态：**待审核**。审核通过后再动手。本文不含任何密钥。
-> 编写依据：对 `luty-server` 的实际只读探测 + 仓库当前代码（commit `9f2a338`）。
+> 状态：**已定稿，待开工**（阶段 0 前置条件已满足：DNS 已生效）。
+> 本文不含任何密钥。
+> 编写依据：对 `luty-server` 的实际只读探测 + 仓库代码 + 已核实的第三方源码/文档。
+
+---
+
+## 0. 决策记录（已与用户确认）
+
+| # | 决策 | 结论 |
+|---|---|---|
+| 1 | 发版触发 | **只认 tag**：`v1.2.0` 形式。推送 main 分支只跑 CI + 临时栈冒烟，**不发布、不部署** |
+| 2 | tag 粒度 | **单 tag 发全套**（网页端镜像 + 桌面产物 + `latest.yml`），**不用** `_web` / `_desktop` 后缀 |
+| 3 | 订阅档位 | **Free 10 条 / Plus 200 条 / Pro 无限**，暂只分额度 |
+| 4 | 计费周期 | 先只做**月付** |
+| 5 | 部署方式 | **SSH**（不复用 9router 的 webhook 模式） |
+| 6 | 入口 | 挂 Traefik + `traefik-net`，**不占新端口** |
+| 7 | 域名 | `quicklaunch.luty.tech` A → `122.152.219.10`（**已生效**） |
+| 8 | SSH 密钥 | **一对部署专用密钥，所有项目共用**（官方：一台服务器一把即可）；是否收紧为单命令待定 |
+| 9 | 回滚 | 换 `APP_IMAGE` 到上一个 `sha-` tag 重跑 |
+| 10 | 镜像清理 | 服务器只保留最近 3 个 tag |
+| 11 | `.env` 写入 | **由用户在服务器上执行**，密钥不经过 AI、不进 GitHub |
+
+### 0.1 为什么用「单 tag 发全套」而不是后缀分开
+
+这是本次方案里唯一一处推翻了初始设想的决策，依据是**读源码得到的硬约束**：
+
+`electron-updater@6.8.9` 的 `GitHubProvider.getLatestVersion()` 只取 GitHub `releases.atom` 的
+**第一个 entry（即最新 Release）**，然后在该 Release 内找 `latest.yml`；找不到即抛错。
+遍历历史 Release 的分支仅在 `allowPrerelease` 为真时启用，默认关闭。
+
+> **不变量：最新 Release 必须包含 `latest.yml`，否则桌面端自动更新静默失效。**
+
+若采用 `_web` / `_desktop` 后缀，发一次 `_web` 就会让 `_web` 成为"最新 Release"而其中没有
+`latest.yml`，必须在每次发布时额外携带该文件——多一条容易漏掉的不变量。
+
+而本项目的桌面端与 API **同仓库、同提交构建**，一起发布天然保证版本一致；分开发反而会产生
+「客户端 1.2.0 连后端 1.1.0」的版本偏移。故采用单 tag 全发。
+
+「只部署网页端」这类例外需求，改用独立的 `workflow_dispatch` 入口，**不占用 tag 语义**。
+
+### 0.2 附带的硬门禁
+
+- tag 格式校验：`^v\d+\.\d+\.\d+$`，拼错即拦；
+- **tag 版本号必须严格大于已发布的最高版本**，否则报错。
+  理由：桌面端只接受更高版本，打一个旧号会静默永久失效；
+- Release 必须包含 `latest.yml` 且其中 `version` 与 tag 一致。
 
 ---
 
@@ -19,18 +63,18 @@
 | 项 | 实测值 | 对方案的影响 |
 |---|---|---|
 | 主机 | `VM-0-8-ubuntu`，Ubuntu 24.04 LTS，x86_64 | CI 构建的是 amd64 镜像，**可直接 pull** |
-| 配置 | 4 vCPU / 3.6 GB 内存 / 40 GB 磁盘（已用 68%，剩 ~13 GB） | 本应用镜像约 110 MB，Postgres 数据量极小，**余量充足** |
+| 配置 | 4 vCPU / 3.6 GB 内存 / 40 GB 磁盘（探测时为 26G 已用；用户已扩容） | 本应用镜像约 110 MB，Postgres 数据量极小，**余量充足** |
 | Docker | 27.5.1，Compose v2.32.4 | 无需安装任何东西 |
 | 用户 | `ubuntu`，**属于 docker 组**（可直接跑 docker），`sudo -n` 免密可用 | 部署不需要 sudo |
 | 现有容器 | `traefik:v3.2`（占 80/443）、`homepage`（5005）、`9router`（20128） | **80/443 已被占用，不能自己监听** |
 | Docker 网络 | 存在 `traefik-net` | 应用加入该网络，由 Traefik 反代 |
 | Traefik 配置 | `exposedByDefault: false`，network `traefik-net`，file provider 读 `~/traefik/dynamic/dynamic.yml` | **只有显式打 label 的容器才会被暴露**，符合我的需求 |
-| TLS | Let's Encrypt，`tlsChallenge`，证书存 `~/traefik/acme.json` | 新子域名自动签发证书，无需手动运维 |
-| 域名 | `luty.tech` → 122.152.219.10（`luty.tech` 走 homepage，`router.luty.tech` 走 9router） | 见下方「需要你做的事」 |
-| DNS | **`quicklaunch.luty.tech` 目前无解析** | **必须先加 A 记录**，否则 Let's Encrypt 签不出证书 |
-| 防火墙 | `ufw` inactive；22 端口可外部 SSH | 入站由云厂商安全组控制 |
+| TLS | Let's Encrypt，tlsChallenge（TLS-ALPN-01），证书存 `~/traefik/acme.json` | 新子域名自动签发证书，无需手动运维 |
+| 域名 | `luty.tech` → 122.152.219.10（apex 走 homepage，`router.luty.tech` 走 9router） | 新增 `quicklaunch` 子域名，互不影响 |
+| DNS | ✅ **`quicklaunch.luty.tech` → 122.152.219.10 已生效**（NS 在 DNSPod） | 前置条件已满足，可进入阶段 0 |
+| 防火墙 | `ufw` inactive；22/80/443 外部可达 | 入站由云厂商安全组控制 |
 | 已有的部署模式 | `~/9router-webhook.py` + systemd `9router-webhook.service`，端口 9876，HMAC 验签 | **当前 inactive，且 9876 未监听** |
-| `~/.ssh/authorized_keys` | 1 条公钥 | 部署用的新公钥需要追加进去（我会先给你公钥，由你决定是否加） |
+| `~/.ssh/authorized_keys` | 1 条公钥（用户本机） | 部署专用公钥需追加；由用户操作或授权我代做，**不覆盖原条目** |
 
 ### 为什么不复用已有的 webhook 模式
 
@@ -49,18 +93,21 @@
 ### 3.1 总体流程
 
 ```
-push to main
+推送 tag v1.2.0
    │
-   ├─ verify-backend / verify-web（不变）
+   ├─ verify-backend / verify-web
+   ├─ 版本门禁：tag 格式合法 + 严格大于已发布最高版本
    ├─ docker: 构建并推送 ghcr.io/luty4ng/quicklaunchtemplate:sha-<commit>
-   ├─ deploy-local: 在 runner 上起栈 + 冒烟（不变，仍然是最快的门禁）
+   ├─ deploy-local: 在 runner 上起栈 + 冒烟（快速门禁，不变）
+   ├─ desktop / android(可选): 打包，版本号取自 tag
+   ├─ release: 发 Release（含 latest.yml，version 与 tag 一致）
    │
-   └─ deploy-server（新增，需要 manual approval 或直接自动？见 §7 待确认）
-         ├─ SSH 到 luty-server（新密钥，只用于部署）
+   └─ deploy-server（新增）
+         ├─ SSH 到 luty-server（部署专用密钥）
          ├─ docker compose pull app migrate
-         ├─ docker compose up -d --wait db / migrate / app
-         ├─ 等容器 healthy
-         └─ 从公网 HTTPS 地址跑一次冒烟：python scripts/smoke.py --base-url https://quicklaunch.luty.tech
+         ├─ 迁移先跑：compose up --exit-code-from migrate migrate
+         ├─ 起应用：up -d --wait app，等容器 healthy
+         └─ 公网验收：python scripts/smoke.py --base-url https://quicklaunch.luty.tech
 ```
 
 **关键点：部署后的验收不是「容器起来了」，而是「从公网用真实 HTTPS 打通全链路」**——
@@ -251,25 +298,32 @@ networks:
 
 ### 7.1 必须你来做（我做不了）
 
-1. **加 DNS A 记录**：`quicklaunch.luty.tech` → `122.152.219.10`（没有它签不出证书）
-2. **决定子域名**：默认用 `quicklaunch.luty.tech`，你想换名字就告诉我
-3. **Stripe 侧配置**：
+1. ~~加 DNS A 记录~~ ✅ **已完成**（`quicklaunch.luty.tech` → `122.152.219.10`，已验证解析）
+2. **部署侧的 GitHub 配置**（只能你操作）：
+   - Secret `DEPLOY_SSH_KEY`：部署专用**私钥**（待我生成公钥给你之后）
+   - Variable `DEPLOY_HOST` = `122.152.219.10`
+   - Variable `DEPLOY_USER` = `ubuntu`
+3. **把部署公钥加进服务器** `~/.ssh/authorized_keys`（**不覆盖原有条目**）：
+   由你执行，或你授权我代做（我会先把完整命令给你看）
+4. **Stripe 侧配置**：
    - 建测试账号，保持 **Test mode**
-   - 建 1 个 Product + 1 个 Price（建议先只做月付），把 `price_...` 给我
-   - 部署后再注册 webhook 端点 `https://quicklaunch.luty.tech/api/billing/webhook`，
-     把 `whsec_...` 给我（**注意：不能提前注册，因为域名还没解析**）
-4. **提供 Stripe 测试密钥**：`sk_test_...`（不给我也能全部实现 + 用桩验证，只是真实 Checkout 那一下要你点）
+   - 建 1 个 Product + 2 个 Price（Plus 月付 / Pro 月付），把两个 `price_...` 给我
+   - 在 Billing → Customer portal 里**启用客户门户**（否则「管理订阅」按钮会报错）
+   - 服务器跑起来后再注册 webhook 端点 `https://quicklaunch.luty.tech/api/billing/webhook`，
+     取得 `whsec_...`
+5. **提供 Stripe 测试密钥**：`sk_test_...`（不给我也能全部实现 + 用桩验证，只是真实 Checkout 那一下要你点）
 
-### 7.2 需要你确认的决策点
+### 7.2 已确认的决策点
 
-| # | 问题 | 我的建议 |
+| # | 问题 | 结论 |
 |---|---|---|
-| 1 | 部署是**自动**（main 绿灯即上）还是**手动触发**（workflow_dispatch）？ | **先手动**。上线初期手动更安全，稳定后改自动（改一行 if） |
-| 2 | 是否允许我给你一个**新的 SSH 公钥**，由你追加到服务器 `authorized_keys`？ | 是。私钥只进 GitHub Secret；撤销只需删掉那一行 |
-| 3 | 订阅周期 | **先只做月付**，年付以后加一个 `price_id` 即可 |
-| 4 | 免费额度 10 条 | 认可就用 10 |
-| 5 | 部署目录 `~/quicklaunch/` | 认可就用这个路径 |
-| 6 | 部署时是否允许**短暂中断**（重建容器几秒）？ | 单副本无法真正零停机；Demo 阶段建议接受。要零停机就得双副本 + 滚动更新，复杂度不值当 |
+| 1 | 发版触发 | ✅ **只认 tag**，`v1.2.0` 单 tag 发全套 |
+| 2 | SSH 公钥追加 | ⏳ 待我生成公钥后由你操作或授权我代做 |
+| 3 | 订阅周期 | ✅ 先只做月付 |
+| 4 | 档位与额度 | ✅ Free 10 / Plus 200 / Pro 无限 |
+| 5 | 部署目录 | ✅ `~/quicklaunch/` |
+| 6 | 部署时短暂中断 | ✅ 接受（单副本无法真零停机） |
+| 7 | 部署密钥是否收紧为单命令 | ⏳ 待定（见 §3.4） |
 
 ---
 
@@ -277,22 +331,27 @@ networks:
 
 | 风险 | 影响 | 应对 |
 |---|---|---|
-| 证书签发失败 | 域名不通 | 先只加 DNS + 一个最小容器验证 Traefik 能签发，**再**做支付 |
+| 证书签发失败 | 域名不通 | 阶段 0 先用占位容器验证 Traefik 能签发，**再**做支付 |
+| **tag 版本号未递增** | 桌面端**静默**永不更新 | 硬门禁：tag 版本必须严格大于已发布最高版本，否则管线报错 |
+| **最新 Release 缺 `latest.yml`** | 同上，静默失效 | 单 tag 全发从机制上消除该风险；release job 仍校验文件存在且版本一致 |
 | Stripe 事件字段与预期不符 | 订阅状态写错 | 拿到密钥后先用真实 API 调一次并打印结构，**按实际字段写代码** |
 | webhook 未到达（网络/配置） | 用户付了钱没解锁 | 提供 `/api/billing/sync` 兜底：用户点「我已完成支付」时主动向 Stripe 查一次真实订阅状态 |
-| 服务器磁盘 | 构建失败 | 只 pull 镜像不在服务器构建；`docker image prune` 由部署脚本按需清理**本项目**的旧 tag |
+| 部署密钥泄露 | 服务器被入侵 | 专用密钥（不与你个人密钥共用）+ 可选 `command=` 收紧为单命令 + 随时删 `authorized_keys` 一行撤销 |
+| 服务器磁盘 | 构建失败 | 只 pull 镜像不在服务器构建；部署脚本清理**本项目**旧 tag，保留最近 3 个 |
 | 误改到其他项目 | **严重** | 所有操作限定在 `~/quicklaunch/`；不动 `9router`/`traefik`/`homepage`；每次改动前先 `ls` 确认路径 |
-| 密钥泄漏进日志 | **严重** | 部署脚本不打印 `.env`；`set -x` 避开密钥行；仓库加 secret 扫描检查 |
+| 密钥泄漏进日志 | **严重** | 部署脚本不打印 `.env`；仓库加密钥扫描检查 |
 
 ---
 
-## 9. 实施顺序（审核通过后）
+## 9. 实施顺序（已获批准，按序执行）
 
 分阶段，每阶段结束都可验证、可停下来：
 
-1. **阶段 0｜连通性**：加 DNS → 部署一个占位容器 → 确认 Traefik 签发证书、域名返回 200。
-   *这一步不碰支付，先证明网络链路通。*
-2. **阶段 1｜真实部署**：`deploy-server` job + 服务器目录 + `.env` + 公网冒烟。跑通后 main 绿灯即可上线。
+1. **阶段 0｜连通性**：部署一个占位容器（挂 Traefik label）→ 确认 Let's Encrypt 签发证书、
+   `https://quicklaunch.luty.tech` 返回 200 → 销毁占位容器。
+   *不碰支付、不碰数据、不碰其他服务。*
+2. **阶段 1｜真实部署**：`deploy-server` job + 服务器目录 + `.env`（**由你在服务器上写**）+
+   公网冒烟 + tag 门禁 + 回滚脚本。跑通后打 tag 即可上线。
 3. **阶段 2｜支付后端**：模型 + 迁移 + 网关抽象 + 4 个接口 + 单元/验签/幂等测试（全部离线可跑）。
 4. **阶段 3｜支付前端**：额度展示、升级按钮、门户入口、支付返回轮询。
 5. **阶段 4｜端到端**：`fake_stripe.py` 进 CI；拿到你的测试密钥后走一次真实 Checkout + 真实 webhook。
@@ -300,12 +359,20 @@ networks:
 
 ---
 
-## 10. 待确认清单（回我这几项即可开工）
+## 10. 当前阻塞项与下一步
 
-- [ ] 域名：沿用 `quicklaunch.luty.tech`，还是换一个？
-- [ ] DNS A 记录已加 / 由我提示你加
-- [ ] 部署触发方式：先手动（建议）还是直接自动
-- [ ] 是否同意我用新 SSH 公钥部署（我会先把公钥给你看）
-- [ ] Stripe：`price_id` + 是否提供 `sk_test_...`（给了就能验真实 API，不给就先用桩）
-- [ ] 订阅周期：月付（建议）还是月付+年付
-- [ ] 免费额度：10 条
+**已全部确认**：域名、DNS、发版方式（tag 单发全套）、档位额度、部署目录、部署方式（SSH）、
+订阅周期（月付）。
+
+**剩余阻塞项（按顺序）**：
+
+| # | 待办 | 谁 | 阻塞什么 |
+|---|---|---|---|
+| 1 | 生成部署密钥对，把公钥交给用户 | 我 | 阶段 1 的 SSH 部署 |
+| 2 | 公钥追加到服务器 `authorized_keys` | 用户（或授权我） | 同上 |
+| 3 | GitHub Secret `DEPLOY_SSH_KEY` + Variable `DEPLOY_HOST`/`DEPLOY_USER` | 用户 | 同上 |
+| 4 | Stripe：建 Product + 2 个 Price（Plus/Pro 月付），启用客户门户，给我 `price_*` | 用户 | 阶段 2 的真实价格 |
+| 5 | Stripe：`sk_test_...`（可选） | 用户 | 真实 Checkout 验证；不给则用桩 |
+| 6 | 服务器跑起来后注册 webhook 端点，取得 `whsec_...` | 用户 | 阶段 4 的端到端验证 |
+
+**阶段 0 不依赖上述任何一项**（只需 DNS，已完成），因此可以从现在开始。
