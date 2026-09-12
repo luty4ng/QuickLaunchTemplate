@@ -116,36 +116,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           NEW_VERSION: ${{ steps.pick.outputs.version }}
+          REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          highest="$(gh release list --limit 100 --json tagName \
-            | python3 -c '
-          import json, sys
-          tags = [r["tagName"].lstrip("v") for r in json.load(sys.stdin)]
-          def key(v):
-              core = v.split("-")[0].split(".")
-              return tuple(int(p) if p.isdigit() else 0 for p in (core + ["0", "0"])[:3])
-          released = [t for t in tags if t and t[0].isdigit()]
-          print(max(released, key=key) if released else "")
-          ')"
-          echo "published highest: ${highest:-（无）}"
-          echo "this tag         : $NEW_VERSION"
-
-          if [ -z "$highest" ]; then
-            echo "no releases yet; nothing to compare against"; exit 0
-          fi
-          if ! python3 -c '
-          import sys
-          def key(v):
-              core = v.split("-")[0].split(".")
-              pre = v.split("-", 1)[1] if "-" in v else None
-              return (tuple(int(p) if p.isdigit() else 0 for p in (core + ["0", "0"])[:3]), pre is None)
-          sys.exit(0 if key(sys.argv[1]) > key(sys.argv[2]) else 1)
-          ' "$NEW_VERSION" "$highest"; then
-            echo "::error::$NEW_VERSION is not newer than the published $highest. Installed desktop clients only accept a HIGHER version, so this release would reach nobody. Bump the version."
-            exit 1
-          fi
-          echo "::notice::$NEW_VERSION is newer than the published $highest"
+          python3 scripts/check_version.py --version "$NEW_VERSION" --repo "$REPO"
 
   # ---------------------------------------------------------------------
   # 0b. Change detection, so a docs-only commit does not rebuild 3 clients.
