@@ -78,7 +78,8 @@
       "owner": "luty4ng",
       "repo": "QuickLaunchTemplate",
       "releaseType": "release"
-    }
+    },
+    "electronUpdaterCompatibility": ">=2.16"
   },
   "dependencies": {
     "electron-updater": "^6.8.9"

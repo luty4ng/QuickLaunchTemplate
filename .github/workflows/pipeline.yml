@@ -524,7 +524,11 @@ jobs:
           # Public URL the packaged app talks to by default. Empty = same origin.
           QL_API_BASE: ${{ vars.QL_API_BASE }}
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-        run: npm run ${{ matrix.script }}
+        # `--publish never`: the publish provider is configured so electron-builder
+        # writes latest.yml, but uploading is the release job's business. Without
+        # this flag electron-builder tries to publish during the build and fails
+        # demanding GH_TOKEN.
+        run: npm run ${{ matrix.script }} -- --publish never
 
       - uses: actions/upload-artifact@v7
         with:
