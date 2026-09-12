@@ -53,6 +53,18 @@ services:
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
       CORS_ORIGINS: ${CORS_ORIGINS:-}
       WEB_DIST: /app/web/dist
+      # Billing. Empty on the deployment until real values are put in .env, which
+      # makes the billing endpoints answer 503 rather than half-work; CI points
+      # them at scripts/fake_stripe.py so the payment path is exercised.
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+      STRIPE_PRICE_PLUS: ${STRIPE_PRICE_PLUS:-}
+      STRIPE_PRICE_PRO: ${STRIPE_PRICE_PRO:-}
+      STRIPE_API_BASE: ${STRIPE_API_BASE:-}
+    extra_hosts:
+      # Lets the container reach a service on the host, which is how CI runs the
+      # fake payment provider next to the stack. Harmless when unused.
+      - "host.docker.internal:host-gateway"
     ports:
       - "${APP_PORT:-8000}:8000"
     restart: unless-stopped

@@ -399,18 +399,48 @@ jobs:
     # compose.yaml interpolates these for every docker compose command, not just
     # the one that starts the stack - without them even `compose down` fails with
     # "required variable JWT_SECRET is missing a value".
+    #
+    # The STRIPE_* values point the image at a Stripe-shaped server running on
+    # this runner (scripts/fake_stripe.py). That is what lets the payment path -
+    # checkout over HTTP, a signed webhook, entitlement, quota lifted - be
+    # exercised on every build without an account, credentials or a human with a
+    # card. They are obviously fake values, and they never reach the deployment.
     env:
       JWT_SECRET: deploy-time-secret-that-is-long-enough-0001
       POSTGRES_PASSWORD: ci-postgres-password
       APP_PORT: '8000'
+      STRIPE_SECRET_KEY: sk_test_fake_for_pipeline
+      STRIPE_WEBHOOK_SECRET: whsec_fake_for_pipeline
+      STRIPE_PRICE_PLUS: price_fake_plus
+      STRIPE_PRICE_PRO: price_fake_pro
+      STRIPE_API_BASE: http://host.docker.internal:12194
 
     steps:
       - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
 
       - uses: actions/download-artifact@v8
         with:
           name: app-image
           path: /tmp
+
+      # Started first: the app asks it for a checkout url during the smoke test,
+      # and it delivers webhooks back to the app.
+      - name: start the fake payment provider
+        run: |
+          set -euo pipefail
+          nohup python3 scripts/fake_stripe.py \
+            --host 0.0.0.0 --port 12194 \
+            --webhook-target http://127.0.0.1:8000/api/billing/webhook \
+            > /tmp/fake-stripe.log 2>&1 &
+          for i in $(seq 1 30); do
+            curl -fsS -X POST http://127.0.0.1:12194/__control/reset >/dev/null && break
+            sleep 1
+          done
+          echo "fake provider is up:"; tail -2 /tmp/fake-stripe.log
 
       # The migrations service in compose.yaml runs first and the app waits for
       # it, so a broken schema change fails here - loudly - instead of surfacing
@@ -425,6 +455,10 @@ jobs:
           docker load -i /tmp/image.tar
           docker tag "${IMAGE}:sha-${short}" "${IMAGE}:sha-${GITHUB_SHA}"
           export APP_IMAGE="${IMAGE}:sha-${GITHUB_SHA}"
+
+          # host.docker.internal is how the container reaches the provider on the
+          # runner; on Linux that needs an explicit mapping.
+          export STRIPE_API_BASE="http://host.docker.internal:12194"
 
           docker compose -f compose.yaml up -d --wait db
           for i in $(seq 1 30); do
