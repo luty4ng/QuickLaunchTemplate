@@ -538,25 +538,32 @@ jobs:
             desktop/release/*.zip
             desktop/release/*.AppImage
             desktop/release/*.deb
-            # latest.yml is the update feed electron-updater reads; blockmap is
-            # what lets it download only the changed bytes.
+            # latest.yml is the update feed electron-updater reads; the blockmap
+            # lets it download only the changed bytes. Linux writes its own feed.
             desktop/release/latest.yml
+            desktop/release/latest-linux.yml
             desktop/release/*.blockmap
           if-no-files-found: error
           retention-days: 7
 
       # This job runs on both Windows and Linux, and `ls -lh` is not a PowerShell
       # command - the matrix step needs an explicit shell.
-      - name: show what the release will contain
+      #
+      # Each platform writes its own feed file: `latest.yml` for Windows and
+      # `latest-linux.yml` for AppImage. Only the Windows one matters here (the
+      # desktop client under test is the Windows build), but both are uploaded.
+      - name: check the platform update feed was generated
         shell: bash
         working-directory: desktop
+        env:
+          FEED: ${{ matrix.target == 'windows' && 'latest.yml' || 'latest-linux.yml' }}
         run: |
           ls -lh release || true
-          echo "--- latest.yml (the update feed clients read) ---"
-          if [ -f release/latest.yml ]; then
-            cat release/latest.yml
+          echo "--- $FEED (the update feed a client reads) ---"
+          if [ -f "release/$FEED" ]; then
+            cat "release/$FEED"
           else
-            echo "::error::latest.yml was not generated - installed clients could never update"
+            echo "::error::$FEED was not generated - installed clients could never update"
             exit 1
           fi
 
