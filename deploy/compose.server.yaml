@@ -1,0 +1,27 @@
+# 服务器专用的 compose 覆盖文件：把 app 接到已有的 Traefik 上。
+#
+# 为什么不直接改仓库里的 compose.yaml：那份要同时服务"在 GitHub runner 上
+# 起临时栈做冒烟"的场景，那里没有 Traefik、也不需要对外暴露。这份覆盖文件
+# 只存在于服务器上（由 CD 每次部署时同步），把两部分差异隔离在一处。
+#
+# 用法：docker compose -f compose.yaml -f compose.server.yaml up -d
+# 注意：不要加 -v，那会删掉 Postgres 数据卷。
+
+services:
+  app:
+    # 不再自己监听宿主端口：只让 Traefik 通过内部网络访问。
+    ports: !reset []
+    networks:
+      - default
+      - traefik-net
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: traefik-net
+      traefik.http.routers.quicklaunch.rule: Host(`quicklaunch.luty.tech`)
+      traefik.http.routers.quicklaunch.entrypoints: websecure
+      traefik.http.routers.quicklaunch.tls.certresolver: letsencrypt
+      traefik.http.services.quicklaunch.loadbalancer.server.port: "8000"
+
+networks:
+  traefik-net:
+    external: true

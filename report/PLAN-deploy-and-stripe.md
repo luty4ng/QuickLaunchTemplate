@@ -347,13 +347,64 @@ networks:
 
 分阶段，每阶段结束都可验证、可停下来：
 
-1. **阶段 0｜连通性**：部署一个占位容器（挂 Traefik label）→ 确认 Let's Encrypt 签发证书、
-   `https://quicklaunch.luty.tech` 返回 200 → 销毁占位容器。
-   *不碰支付、不碰数据、不碰其他服务。*
-2. **阶段 1｜真实部署**：`deploy-server` job + 服务器目录 + `.env`（**由你在服务器上写**）+
-   公网冒烟 + tag 门禁 + 回滚脚本。跑通后打 tag 即可上线。
-3. **阶段 2｜支付后端**：模型 + 迁移 + 网关抽象 + 4 个接口 + 单元/验签/幂等测试（全部离线可跑）。
-4. **阶段 3｜支付前端**：额度展示、升级按钮、门户入口、支付返回轮询。
+### ✅ 阶段 0｜连通性 —— **已完成（2026-09-12）**
+
+在 `~/quicklaunch/` 下用独立项目 `ql-phase0` 起了 nginx 占位容器，挂 Traefik label，
+验证后销毁（`docker compose down`，未用 `-v`）。实测结果：
+
+| 验收项 | 结果 |
+|---|---|
+| 证书主体 / 签发者 | `CN = quicklaunch.luty.tech` / **Let's Encrypt**（`CN = YR2`） |
+| 有效期 | `Sep 12 08:34:24` → `Dec 11 08:34:23 2026 GMT` |
+| SAN | `DNS:quicklaunch.luty.tech` |
+| acme.json 证书数 | 3 → **4**（确认是新签发，非复用泛域名） |
+| 外网访问 | **HTTP 200**，页面内容正确 |
+| 其他服务未受影响 | `luty.tech` 200、`router.luty.tech` 307、`traefik.luty.tech` 401（与改动前一致） |
+
+同时验证了服务器 compose（v2.32.4）**支持 `!reset` 覆盖语法**：
+`docker compose -f compose.yaml -f compose.server.yaml config` 合并后
+`app.ports = None`、app 同时接入 `default` 与 `traefik-net`、6 条 Traefik label 生效。
+
+### ⚠️ 阶段 1｜遇到环境约束：服务器拉不动 GHCR（待决策）
+
+`deploy.sh` 在「拉取镜像」这一步挂死。实测服务器出网吞吐：
+
+| 目标 | 实测速度 | 结论 |
+|---|---|---|
+| **ghcr.io** | **0.00 Mbps** | 几乎不通，大镜像拉不动 |
+| **github.com release 资产** | **0.00 Mbps** | 不通 |
+| github.com 首页 / codeload | 0.37 Mbps | 极慢但可用 |
+| **docker hub** | **0.00 Mbps** | 不通，且 `/etc/docker/daemon.json` 不存在（无镜像加速） |
+| pypi | 0.19 Mbps | 很慢 |
+| npm registry | 17.69 Mbps | 正常 |
+| **git clone 本仓库（浅克隆）** | **7 秒完成** | 可用 |
+
+其余已完成项（不再受此约束影响）：
+
+- 服务器侧文件已就位：`compose.yaml`、`compose.server.yaml`、`deploy.sh`、`.env`(600)
+- `.env` 中 `JWT_SECRET`(64 字符)/`POSTGRES_PASSWORD` 由**服务器本地生成**，未经过 AI、未进 GitHub
+- 部署专用密钥已在 `authorized_keys` 中，且 CI 侧 Secret 指纹已用临时 workflow 验证通过
+  （`SHA256:S/hiR65Izc3surRmZYzrQBSRq/ixEGHhYVs86L43boA`），该 workflow 用后已删除
+- `deploy.sh` 的行为：先起 db 等 healthy → **迁移独立成步、失败即停** → 起 app 等 healthy →
+  清理旧镜像（保留最近 N 个）→ **绝不覆盖 `.env`、绝不 `down -v`**
+
+**可行方案（三选一，均已评估）**：
+
+| 方案 | 做法 | 代价 | 我的建议 |
+|---|---|---|---|
+| **A. 配置 Docker 镜像加速** | 在 `/etc/docker/daemon.json` 加 `https://mirror.ccs.tencentyun.com`（已实测返回 200），重启 docker | **重启 docker 会短暂影响 9router/homepage/traefik**；且加速器只解决 Docker Hub，GHCR 未必受益 | 需你授权；能解决"从源码构建"路线 |
+| **B. 服务器本地构建镜像** | 服务器 `git clone`（7 秒）后 `docker build` | 构建要拉 `node:22-alpine` 与 `python:3.12-slim`，而 Docker Hub 不通 → **仍被 A 阻塞** | 与 A 组合才可行 |
+| **C. 走腾讯云容器镜像服务 TCR** | 服务器从 `ccr.ccs.tencentyun.com` 拉（内网快），CI 推过去 | 需要你在腾讯云开通 TCR（个人版免费）、创建命名空间与仓库、给出访问凭据；CI 侧要加一个 push 目标 | 长期最干净，但需要你开通 |
+
+**不采用的方案**：从本机 `docker save` 后 scp 传镜像——每层 110 MB，跨境上行同样不可靠，
+且每次发版都要经过我的机器，不适合作为 CI 路径。
+
+### 后续阶段（阶段 1 打通后继续）
+
+1. **阶段 1（续）**：选定 registry 方案 → 修 `deploy.sh` 的镜像来源 → 部署 → 公网冒烟 →
+   加 `deploy-server` job（tag 触发）+ tag 门禁 + 回滚脚本。
+2. **阶段 2｜支付后端**：模型 + 迁移 + 网关抽象 + 4 个接口 + 单元/验签/幂等测试（全部离线可跑）。
+3. **阶段 3｜支付前端**：额度展示、升级按钮、门户入口、支付返回轮询。
 5. **阶段 4｜端到端**：`fake_stripe.py` 进 CI；拿到你的测试密钥后走一次真实 Checkout + 真实 webhook。
 6. **阶段 5｜文档**：README 与报告补部署/支付章节，记录实测数据。
 
