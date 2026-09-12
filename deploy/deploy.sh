@@ -48,17 +48,70 @@ grep -qE '^JWT_SECRET=.{32,}$' .env || fail ".env 里的 JWT_SECRET 短于 32 �
 
 # ---------------------------------------------------------------------------
 # 1. 取源码
+#
+#    这台机器到 github.com 的链路会**周期性被掐断**：v1.2.0 的第一次部署就是死在
+#      fatal: unable to access 'https://github.com/...':
+#      GnuTLS recv error (-110): The TLS connection was non-properly terminated.
+#    ——同一个仓库的 codeload tarball 那一刻却是通的（实测 3 秒 223 KB）。
+#    所以"取源码"不是一条命令，而是三种办法依次尝试，每种都有自己的超时，
+#    谁成功就用谁，并把用的是哪一种打进日志（CI 日志里能直接看到）。
+#
+#    另外两个参数是给这种链路用的：lowSpeedLimit/lowSpeedTime 让**卡住的**传输
+#    在 30 秒内报错，而不是一直挂着（手工复现时 `git fetch` 挂了 3 分钟没有任何输出）。
 # ---------------------------------------------------------------------------
 log "获取源码（$GIT_REF）"
+
+REPO_URL="https://github.com/luty4ng/QuickLaunchTemplate.git"
+REPO_SLUG="luty4ng/QuickLaunchTemplate"
+GIT_NET=(-c http.version=HTTP/1.1 -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=30)
+SOURCE_METHOD=""
+
+# 1a) 已有克隆：增量拉取（最快，也最常被掐）
 if [ -d "$SRC_DIR/.git" ]; then
-  git -C "$SRC_DIR" fetch --depth 1 origin "$GIT_REF"
-  git -C "$SRC_DIR" checkout -q --force FETCH_HEAD
-else
-  rm -rf "$SRC_DIR"
-  git clone --depth 1 --branch "$GIT_REF" \
-    https://github.com/luty4ng/QuickLaunchTemplate.git "$SRC_DIR"
+  for attempt in 1 2 3; do
+    printf '  [1/3] git fetch（第 %s 次）…\n' "$attempt"
+    if timeout 120 git -C "$SRC_DIR" "${GIT_NET[@]}" fetch --depth 1 origin "$GIT_REF" \
+       && git -C "$SRC_DIR" checkout -q --force FETCH_HEAD; then
+      SOURCE_METHOD="git fetch（第 ${attempt} 次）"
+      break
+    fi
+    sleep $((attempt * 5))
+  done
 fi
-REV="$(git -C "$SRC_DIR" rev-parse --short HEAD)"
+
+# 1b) 整仓浅克隆（走的是另一条路径，常常还能用）
+if [ -z "$SOURCE_METHOD" ]; then
+  printf '  [2/3] 重新浅克隆…\n'
+  rm -rf "$SRC_DIR"
+  if timeout 300 git "${GIT_NET[@]}" clone --depth 1 --branch "$GIT_REF" "$REPO_URL" "$SRC_DIR"; then
+    SOURCE_METHOD="git clone"
+  fi
+fi
+
+# 1c) 最后一招：下载源码压缩包（不经过 git，实测这条路在 fetch 失败时仍然通）
+if [ -z "$SOURCE_METHOD" ]; then
+  printf '  [3/3] 下载 codeload tarball…\n'
+  rm -rf "$SRC_DIR"
+  mkdir -p "$SRC_DIR"
+  if timeout 300 curl -fsSL --retry 3 --retry-delay 3 --retry-connrefused \
+       "https://codeload.github.com/${REPO_SLUG}/tar.gz/${GIT_REF}" \
+       | tar -xz -C "$SRC_DIR" --strip-components=1; then
+    SOURCE_METHOD="codeload tarball"
+  fi
+fi
+
+[ -n "$SOURCE_METHOD" ] || fail "三种取源码方式都失败（$GIT_REF）——这台机器到 github.com 的链路当前不通，稍后重试即可"
+printf '取源码方式: %s\n' "$SOURCE_METHOD"
+
+if [ -d "$SRC_DIR/.git" ]; then
+  REV="$(git -C "$SRC_DIR" rev-parse --short HEAD)"
+else
+  # 从 tarball 解出来的源码没有 .git。镜像 tag 需要一个稳定的短 id：问一次
+  # GitHub API；连 API 也不通就退化成 ref 名（仍然可用，只是没那么好看）。
+  REV="$(curl -fsSL --max-time 30 --retry 2 "https://api.github.com/repos/${REPO_SLUG}/commits/${GIT_REF}" 2>/dev/null \
+          | sed -n 's/^ *"sha": *"\([0-9a-f]\{7,\}\)".*/\1/p' | head -1 | cut -c1-7)"
+  [ -n "$REV" ] || REV="$(printf '%s' "$GIT_REF" | tr -c 'A-Za-z0-9._-' '-')"
+fi
 printf '源码版本: %s\n' "$REV"
 
 # ---------------------------------------------------------------------------

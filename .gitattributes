@@ -1,0 +1,14 @@
+# Line endings, pinned where they can actually break something.
+#
+# `deploy/deploy.sh` runs under bash on the deployment server, and the whole
+# pipeline is checked out on Linux - but a Windows working copy (this project is
+# developed on Windows) would otherwise turn it into CRLF, and bash reports that
+# as `$'\r': command not found` on the last line: the deployment succeeds and the
+# script still exits 1. Pinning these to LF removes the whole class of problem.
+#
+# Everything else keeps git's default behaviour.
+*.sh      text eol=lf
+*.py      text eol=lf
+*.yml     text eol=lf
+*.yaml    text eol=lf
+Dockerfile text eol=lf
