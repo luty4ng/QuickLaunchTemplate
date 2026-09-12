@@ -545,12 +545,20 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+      # This job runs on both Windows and Linux, and `ls -lh` is not a PowerShell
+      # command - the matrix step needs an explicit shell.
       - name: show what the release will contain
+        shell: bash
         working-directory: desktop
         run: |
           ls -lh release || true
           echo "--- latest.yml (the update feed clients read) ---"
-          cat release/latest.yml || echo "MISSING latest.yml - installed clients could never update"
+          if [ -f release/latest.yml ]; then
+            cat release/latest.yml
+          else
+            echo "::error::latest.yml was not generated - installed clients could never update"
+            exit 1
+          fi
 
   # Packaging a desktop app is not evidence that it runs. This job installs the
   # artifact on a real Windows machine, boots it headlessly, and lets it call the
