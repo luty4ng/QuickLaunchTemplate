@@ -84,6 +84,11 @@ jobs:
     outputs:
       version: ${{ steps.pick.outputs.version }}
     steps:
+      # The tag guard below runs a script from the repository, so the job needs
+      # the repository. (Without this the guard fails with "No such file or
+      # directory" and blocks a legitimate release.)
+      - uses: actions/checkout@v7
+
       - id: pick
         env:
           # workflow_dispatch may override, which is how the update path is
