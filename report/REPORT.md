@@ -360,9 +360,12 @@ desktop(windows) 755s、docker 55s、smoke-image 54s。
 6. **签名相关**：APK 是 debug 签名；Windows/Linux 桌面未做代码签名。
    未签名不影响自动更新功能，但安装与更新时会弹一次 SmartScreen 警告。
 7. **自动回滚仍然没有**（刻意）：自动回滚会掩盖问题，上一个 `sha-` tag 是人工回滚锚点，管线每次部署演练一遍。
-8. **变更检测没有覆盖 docker job**：只改文档时 `verify-backend` / `verify-web` 会跳过，
-   但 `docker` 仍会构建并推一个内容相同的新 `sha-` tag，`smoke-image` 也会照样冒烟它。
-   好处是「进了仓库的镜像都验过」，代价是这种构建本身有点浪费。
+8. **变更检测没有覆盖 docker / desktop job**：只改文档时 `verify-backend` / `verify-web` 会跳过，
+   但 `docker` 仍会构建并推一个内容相同的新 `sha-` tag，`smoke-image` 也会照样冒烟它，
+   `desktop` 还会重新打包一遍桌面端（约 3–13 分钟）。好处是「进了仓库的镜像都验过」，
+   代价是这种构建本身有点浪费。`desktop` 之所以不做路径过滤，是因为「演练有更新可用」
+   那条路（`workflow_dispatch -f version=0.0.1 -f draft=true`）即使没有路径变更也必须产出安装包——
+   过滤器在这里会悄悄把演练变成空跑。这是刻意的取舍，不是遗漏。
 9. **发版要人做决定，这是刻意的**：推送分支不再发版，只有打 `v<semver>` tag 才发布 + 部署。
    好处是「合并代码」和「惊动线上用户」分开了；代价是发版是一个需要人参与的显式动作
    （也可以 `gh workflow run pipeline -f deploy_ref=main` 只部署不发版）。
@@ -418,8 +421,9 @@ STRIPE_WEBHOOK_SECRET=whsec_fake_secret python scripts/fake_stripe.py \
   --port 12194 --webhook-target http://127.0.0.1:8000/api/billing/webhook
 ```
 
-> 交付状态：**完成**。main 分支干净（无未提交改动、无遗留分支、无开启的 PR），
-> 全部实验分支与测试用的 draft release 已删除，
+> 交付状态：**完成**。main 分支干净（无未提交改动、无遗留分支、无开启的 PR，
+> 三个反向验证 PR 已关闭），测试用的 draft release 与**早期命名方案遗留的 6 个 `build-*`
+> release/tag 已删除**，开发机上的验证残留（含一份部署私钥副本）也已清除，
 > 未对任何其他仓库发起写操作。
 
 ---
@@ -588,6 +592,11 @@ CI 每次部署都会**演练一遍回滚**（重新部署上一个 `sha-` tag �
 - 私钥只能登录这一个用户，且 CI 只用它执行 `~/quicklaunch/deploy.sh`；
 - 所有写操作限制在 `~/quicklaunch/` 目录内；
 - 不执行任何破坏性动作（无 `down -v`、无 `rm -rf`、无系统级改动），重启类操作不做。
+
+> **密钥卫生**：生成密钥时，开发机的临时目录里留过一份私钥副本（`.cache/deploy-key/`，
+> 当时按只读 ACL 保护）。交付前已连同全部本地验证残留一起删除（约 1.1 GB），
+> 现在系统里只剩两处：GitHub Secret `DEPLOY_SSH_KEY` 与服务器 `authorized_keys` 里的公钥。
+> 要作废重来，删掉 `authorized_keys` 里那一行、换掉 Secret，再打一个 tag 即可。
 
 ### 13.5 上线记录（v1.2.1，当前线上版本）
 
