@@ -263,6 +263,33 @@ jobs:
         working-directory: backend
         run: pytest tests/integration -q
 
+      # The smoke-image job starts the fake payment provider with a bare `python3`
+      # that has none of these dependencies, and a version that imported the app
+      # package failed there with ModuleNotFoundError after the whole image had
+      # been built. One second here instead of a wasted pipeline.
+      - name: the fake payment provider runs without the app's dependencies
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import ast, pathlib, sys
+
+          # Everything it imports must be stdlib or its own sibling.
+          allowed = {"fake_stripe_core"}
+          src = pathlib.Path("scripts/fake_stripe.py").read_text()
+          imported = set()
+          for node in ast.walk(ast.parse(src)):
+              if isinstance(node, ast.Import):
+                  imported.update(alias.name.split(".")[0] for alias in node.names)
+              elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+                  imported.add(node.module.split(".")[0])
+
+          third_party = imported - allowed - set(sys.stdlib_module_names)
+          if third_party:
+              print(f"::error::fake_stripe.py imports non-stdlib modules: {sorted(third_party)}")
+              sys.exit(1)
+          print("fake_stripe.py imports only stdlib:", sorted(imported))
+          PY
+
   verify-web:
     name: web / lint + types + unit + build
     runs-on: ubuntu-latest

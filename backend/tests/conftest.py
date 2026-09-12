@@ -89,8 +89,13 @@ def fake_gateway() -> FakeGateway:
     A fresh instance per test, so one test's sessions and subscriptions cannot
     leak into the next. This is what keeps the suite offline: no test can reach
     Stripe even by accident, because the gateway it is given has no network code.
+
+    `base_url` is set here rather than left at the default, so a test asserts
+    against a host it chose instead of one that happens to be hardcoded in the
+    fake - the default is a reachable localhost address because the deployment
+    smoke test derives its control endpoint from the returned url.
     """
-    gateway = FakeGateway()
+    gateway = FakeGateway(base_url="https://checkout.example.test")
     app.dependency_overrides[get_gateway] = lambda: gateway
     yield gateway
     app.dependency_overrides.pop(get_gateway, None)

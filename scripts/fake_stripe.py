@@ -4,24 +4,26 @@
 The smoke test needs to prove the whole billing path works - checkout, payment,
 a signed webhook, entitlement, and the quota lifting - against a **running
 deployment**. Doing that with real Stripe would need credentials, a public
-webhook URL and a human clicking a card form, so this serves the same HTTP
+webhook url and a human clicking a card form, so this serves the same HTTP
 surface the app calls:
 
     POST /v1/checkout/sessions          create a checkout session
     POST /v1/billing_portal/sessions    create a portal session
     GET  /v1/subscriptions/{id}         retrieve a subscription
     POST /__control/pay                 test hook: mark a session paid
+    POST /__control/cancel              test hook: cancel and notify
     POST /__control/reset               test hook: forget everything
 
-It reuses `app.billing.fake.FakeGateway` for the state and for signing, so the
-signatures it produces are the ones the application verifies, and the event
-shapes are the ones the parsers expect. In other words, the only thing being
-faked is Stripe's HTTP transport.
-
 The control endpoints exist because a real payer is a human. They are prefixed
-with `__control` and the script refuses to start with `--env production`.
+`__control`, and the script refuses to start as `--env production`.
 
-    python scripts/fake_stripe.py --port 12194
+Imports nothing but the standard library, so it can run on a bare interpreter -
+which is how the deployment smoke test starts it, without the backend's
+dependencies installed. The logic lives in `fake_stripe_core.py`, shared with the
+test suite's in-memory gateway so the two cannot disagree about event shapes.
+
+    python scripts/fake_stripe.py --port 12194 \\
+        --webhook-target http://127.0.0.1:8000/api/billing/webhook
 """
 
 from __future__ import annotations
@@ -30,37 +32,36 @@ import argparse
 import json
 import re
 import sys
+import urllib.error
 import urllib.parse
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from app.billing.fake import FakeGateway  # noqa: E402
+from fake_stripe_core import FakeStripeState  # noqa: E402
 
-# Above Windows' reserved TCP range (12094-12193 on this machine, and similar on
-# others): binding inside a reserved range fails with WinError 10013, which looks
+# Above Windows' reserved TCP range (12094-12193 on the machine this was written
+# on): binding inside a reserved range fails with WinError 10013, which reads
 # like "port in use" but is not.
 DEFAULT_PORT = 12194
 
-# The address this server actually listens on, set in main(). It has to be
-# reachable rather than decorative: the smoke test derives the provider's control
-# endpoint from the checkout url the application hands back, so a hardcoded
-# placeholder host sends it to a name that does not resolve.
+# Where checkout urls point, so the smoke test can find the control endpoints from
+# the url the application hands back. Set in main().
 PUBLIC_BASE = f"http://127.0.0.1:{DEFAULT_PORT}"
-
-GATEWAY = FakeGateway(base_url=PUBLIC_BASE)
+STATE = FakeStripeState(base_url=PUBLIC_BASE)
 WEBHOOK_TARGET: str | None = None
 
 SESSION_RE = re.compile(r"^/v1/checkout/sessions/([^/]+)$")
 SUBSCRIPTION_RE = re.compile(r"^/v1/subscriptions/([^/]+)$")
 
 
-def _form(payload: bytes, content_type: str) -> dict[str, str]:
+def form(payload: bytes, content_type: str) -> dict[str, str]:
     """Stripe's API is form-encoded; flatten it into a dict of strings."""
     text = payload.decode() if payload else ""
     if "application/json" in content_type:
-        return {k: str(v) for k, v in json.loads(text or "{}").items()}
+        return {str(k): str(v) for k, v in json.loads(text or "{}").items()}
     parsed = urllib.parse.parse_qs(text, keep_blank_values=True)
     return {key: values[-1] for key, values in parsed.items()}
 
@@ -68,7 +69,6 @@ def _form(payload: bytes, content_type: str) -> dict[str, str]:
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
-    # -- helpers -----------------------------------------------------------
     def _json(self, status: int, payload: dict) -> None:
         body = json.dumps(payload).encode()
         self.send_response(status)
@@ -79,14 +79,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def _read(self) -> dict[str, str]:
         length = int(self.headers.get("Content-Length") or 0)
-        return _form(self.rfile.read(length), self.headers.get("Content-Type", ""))
+        return form(self.rfile.read(length), self.headers.get("Content-Type", ""))
 
     def _deliver(self, event: dict) -> tuple[int, str]:
-        """POST a signed event to the application's webhook, as Stripe would."""
+        """POST a signed event to the application, exactly as Stripe would."""
+        global STATE
         if not WEBHOOK_TARGET:
             return 0, "no webhook target configured"
-        import urllib.error
-        import urllib.request
 
         payload = json.dumps(event).encode()
         request = urllib.request.Request(
@@ -95,58 +94,51 @@ class Handler(BaseHTTPRequestHandler):
             method="POST",
             headers={
                 "Content-Type": "application/json",
-                "Stripe-Signature": GATEWAY.sign(payload),
+                "Stripe-Signature": STATE.sign(payload),
                 "User-Agent": "fake-stripe",
             },
         )
         try:
             with urllib.request.urlopen(request, timeout=20) as response:
                 body = response.read().decode(errors="replace")
-                print(
-                    f"fake-stripe: delivered {event.get('type')} -> {response.status} {body[:200]}",
-                    flush=True,
-                )
-                return response.status, body
+                code = response.status
         except urllib.error.HTTPError as error:
-            body = error.read().decode(errors="replace")
-            print(
-                f"fake-stripe: delivered {event.get('type')} -> {error.code} {body[:300]}",
-                flush=True,
-            )
-            return error.code, body
-        except Exception as error:  # noqa: BLE001 - report, do not crash the fake
-            print(f"fake-stripe: could not deliver {event.get('type')}: {error}", flush=True)
-            return 0, str(error)
+            body, code = error.read().decode(errors="replace"), error.code
+        except Exception as error:  # noqa: BLE001 - report, never crash the fake
+            body, code = str(error), 0
+        # Printed either way: "delivered" and "applied" are different things, and
+        # a webhook that returns 200 while granting nothing is the failure this
+        # whole script exists to catch.
+        print(f"fake-stripe: delivered {event.get('type')} -> {code} {body[:200]}", flush=True)
+        return code, body
 
     # -- API ---------------------------------------------------------------
     def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
-        # Declared before any use of the name, which Python requires.
-        global GATEWAY
+        global STATE  # declared before first use, which Python requires
 
         path = urllib.parse.urlparse(self.path).path
-        form = self._read()
+        body = self._read()
 
         if path == "/v1/checkout/sessions":
-            if not form.get("line_items[0][price]") and "line_items" not in form:
-                return self._json(400, {"error": {"message": "no line items"}})
-
-            # The app sends price and quantity per item; accept both shapes.
-            price_id = form.get("line_items[0][price]") or form.get("price") or ""
-            session = GATEWAY.create_checkout_session(
-                user_id=form.get("client_reference_id", ""),
-                email=form.get("customer_email", ""),
-                price_id=price_id,
-                customer_id=form.get("customer") or None,
-                success_url=form.get("success_url", ""),
-                cancel_url=form.get("cancel_url", ""),
-            )
-            stored = GATEWAY.sessions[session.session_id]
+            price_id = body.get("line_items[0][price]") or body.get("price") or ""
+            try:
+                session_id, url = STATE.create_checkout_session(
+                    user_id=body.get("client_reference_id", ""),
+                    email=body.get("customer_email", ""),
+                    price_id=price_id,
+                    customer_id=body.get("customer") or None,
+                    success_url=body.get("success_url", ""),
+                    cancel_url=body.get("cancel_url", ""),
+                )
+            except ValueError as error:
+                return self._json(400, {"error": {"message": str(error)}})
+            stored = STATE.sessions[session_id]
             return self._json(
                 200,
                 {
-                    "id": session.session_id,
+                    "id": session_id,
                     "object": "checkout.session",
-                    "url": session.url,
+                    "url": url,
                     "customer": stored["customer"],
                     "subscription": stored["subscription"],
                     "client_reference_id": stored["client_reference_id"],
@@ -156,46 +148,40 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/v1/billing_portal/sessions":
             try:
-                url = GATEWAY.create_portal_session(
-                    customer_id=form.get("customer", ""), return_url=form.get("return_url", "")
+                url = STATE.portal_url(
+                    customer_id=body.get("customer", ""), return_url=body.get("return_url", "")
                 )
-            except Exception as error:  # noqa: BLE001
+            except ValueError as error:
                 return self._json(400, {"error": {"message": str(error)}})
             return self._json(200, {"id": "bps_fake", "url": url})
 
-        match = SESSION_RE.match(path)
-        if match:
-            session = GATEWAY.sessions.get(match.group(1))
-            if session is None:
-                return self._json(404, {"error": {"message": "no such session"}})
-            return self._json(200, session)
-
         # -- control surface (tests only) ----------------------------------
         if path == "/__control/pay":
-            session_id = form.get("session_id", "")
-            if session_id not in GATEWAY.sessions:
+            session_id = body.get("session_id", "")
+            if session_id not in STATE.sessions:
                 return self._json(404, {"error": {"message": "no such session"}})
-            subscription_id = GATEWAY.complete_checkout(session_id)
-            delivered = []
-            for event in (
-                GATEWAY.checkout_completed_event(session_id),
-                GATEWAY.subscription_event(subscription_id, "customer.subscription.created"),
-            ):
-                delivered.append(self._deliver(event))
+            subscription_id = STATE.complete_checkout(session_id)
+            delivered = [
+                self._deliver(event)
+                for event in (
+                    STATE.checkout_completed_event(session_id),
+                    STATE.subscription_event(subscription_id, "customer.subscription.created"),
+                )
+            ]
             return self._json(200, {"subscription": subscription_id, "delivered": delivered})
 
         if path == "/__control/cancel":
-            subscription_id = form.get("subscription_id", "")
-            if subscription_id not in GATEWAY.subscriptions:
+            subscription_id = body.get("subscription_id", "")
+            if subscription_id not in STATE.subscriptions:
                 return self._json(404, {"error": {"message": "no such subscription"}})
-            GATEWAY.set_subscription(subscription_id, status="canceled")
-            status, body = self._deliver(
-                GATEWAY.subscription_event(subscription_id, "customer.subscription.deleted")
-            )
-            return self._json(200, {"delivered": [[status, body]]})
+            STATE.set_subscription(subscription_id, status="canceled")
+            delivered = [
+                self._deliver(STATE.subscription_event(subscription_id, "customer.subscription.deleted"))
+            ]
+            return self._json(200, {"delivered": delivered})
 
         if path == "/__control/reset":
-            GATEWAY = FakeGateway(base_url=PUBLIC_BASE)
+            STATE = FakeStripeState(base_url=PUBLIC_BASE)
             return self._json(200, {"reset": True})
 
         return self._json(404, {"error": {"message": f"fake stripe has no {path}"}})
@@ -203,41 +189,23 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         path = urllib.parse.urlparse(self.path).path
 
+        session = SESSION_RE.match(path)
+        if session:
+            stored = STATE.sessions.get(session.group(1))
+            if stored is None:
+                return self._json(404, {"error": {"message": "no such session"}})
+            return self._json(200, stored)
+
         subscription = SUBSCRIPTION_RE.match(path)
         if subscription:
-            snapshot = GATEWAY.subscriptions.get(subscription.group(1))
-            if snapshot is None:
+            resource = STATE.subscription_resource(subscription.group(1))
+            if resource is None:
                 return self._json(404, {"error": {"message": "no such subscription"}})
-            return self._json(
-                200,
-                {
-                    "id": snapshot.subscription_id,
-                    "object": "subscription",
-                    "customer": snapshot.customer_id,
-                    "status": snapshot.status,
-                    "cancel_at_period_end": snapshot.cancel_at_period_end,
-                    "metadata": {"user_id": snapshot.user_id},
-                    # The period end lives on the item, as in recent API versions.
-                    "items": {
-                        "object": "list",
-                        "data": [
-                            {
-                                "id": f"si_{snapshot.subscription_id}",
-                                "object": "subscription_item",
-                                "price": {"id": snapshot.price_id},
-                                "current_period_end": int(snapshot.current_period_end.timestamp())
-                                if snapshot.current_period_end
-                                else None,
-                            }
-                        ],
-                    },
-                },
-            )
+            return self._json(200, resource)
 
         return self._json(404, {"error": {"message": f"fake stripe has no {path}"}})
 
     def log_message(self, fmt: str, *args: object) -> None:
-        # One line per request so a CI log shows what the app actually asked for.
         print(f"fake-stripe: {self.command} {self.path}", flush=True)
 
 
@@ -258,20 +226,17 @@ def main() -> int:
     if args.env == "production":
         print("refusing to run the fake payment provider against production", file=sys.stderr)
         return 2
-
-    global GATEWAY, PUBLIC_BASE, WEBHOOK_TARGET
-    WEBHOOK_TARGET = args.webhook_target or None
-
-    # Checkout urls must point back here, because the smoke test uses them to
-    # find these control endpoints. A port of 0 would not be knowable in advance,
-    # so it is rejected rather than silently producing unreachable urls.
     if args.port == 0:
         print("--port 0 is not supported: checkout urls would be unreachable", file=sys.stderr)
         return 2
-    PUBLIC_BASE = f"http://{args.host}:{args.port}"
-    GATEWAY = FakeGateway(base_url=PUBLIC_BASE)
 
-    print(f"fake stripe on {PUBLIC_BASE}", flush=True)
+    global PUBLIC_BASE, STATE, WEBHOOK_TARGET
+    WEBHOOK_TARGET = args.webhook_target or None
+    PUBLIC_BASE = f"http://{args.host if args.host != '0.0.0.0' else '127.0.0.1'}:{args.port}"
+    STATE = FakeStripeState(base_url=PUBLIC_BASE)
+
+    print(f"fake stripe on http://{args.host}:{args.port}", flush=True)
+    print(f"checkout urls will be {PUBLIC_BASE}/...", flush=True)
     if WEBHOOK_TARGET:
         print(f"delivering webhooks to {WEBHOOK_TARGET}", flush=True)
     else:
