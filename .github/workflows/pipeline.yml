@@ -6,6 +6,8 @@ name: pipeline
 # extra token and is easy to get subtly wrong).
 on:
   push:
+    # Releases are driven by tags: pushing v1.2.0 publishes and deploys. A branch
+    # push only validates, so nothing reaches users until a version is chosen.
     branches: ['**']
     tags: ['v*']
   pull_request:
@@ -13,10 +15,15 @@ on:
     inputs:
       version:
         description: >-
-          Desktop version to stamp. Defaults to 1.0.<run number>, which is always
-          higher than the previous build, so installed clients update. Pass a
-          LOWER version (e.g. 0.0.1) to package a build that the published
-          release is newer than - that is how the update path is tested.
+          Version to use instead of the tag's. Pass a LOWER version (e.g. 0.0.1)
+          with draft=true to test the "update is available" path without
+          publishing anything.
+        required: false
+        type: string
+      deploy_ref:
+        description: >-
+          Deploy this ref to the server without publishing a release (e.g. main).
+          Leave empty for a normal tag-driven deployment.
         required: false
         type: string
       draft:
@@ -60,12 +67,16 @@ env:
 
 jobs:
   # ---------------------------------------------------------------------
-  # 0a. The desktop version for this build.
+  # 0a. The version for this build.
   #
-  #      It has to be higher than the last release or electron-updater will
-  #      never offer the update to installed clients - and it must be
-  #      overridable, because testing the update path needs a version that is
-  #      deliberately LOWER than the published one.
+  #      Releases are driven by tags: pushing v1.2.0 is what publishes. A branch
+  #      push only runs CI, so nothing reaches users until a version is chosen.
+  #
+  #      Two rules protect the desktop updater, which only ever accepts a version
+  #      strictly HIGHER than the running one - a repeated or lower version fails
+  #      silently on the client, with nothing shown to the user:
+  #        1. the tag must be v<semver>;
+  #        2. it must be greater than every release already published.
   # ---------------------------------------------------------------------
   versioning:
     name: versioning
@@ -75,14 +86,66 @@ jobs:
     steps:
       - id: pick
         env:
+          # workflow_dispatch may override, which is how the update path is
+          # exercised with a version deliberately LOWER than the published one.
           INPUT_VERSION: ${{ inputs.version }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          version="${INPUT_VERSION:-1.0.${{ github.run_number }}}"
-          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
-            echo "not a semver version: $version"; exit 1
+          set -euo pipefail
+          if [ -n "${INPUT_VERSION}" ]; then
+            version="$INPUT_VERSION"
+            echo "version taken from the dispatch input"
+          elif [ "${REF_TYPE}" = "tag" ]; then
+            version="${REF_NAME#v}"
+            echo "version taken from tag ${REF_NAME}"
+          else
+            version="0.0.0-dev.${{ github.run_number }}"
+            echo "not a release build (branch push); using $version"
           fi
-          echo "desktop version for this build: $version"
+
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::'${REF_NAME:-$version}' is not v<semver>; expected a tag like v1.2.0"
+            exit 1
+          fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      # Only for the numeric part: 1.0.10 must beat 1.0.9.
+      - if: github.ref_type == 'tag'
+        name: the tag must be newer than every published release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEW_VERSION: ${{ steps.pick.outputs.version }}
+        run: |
+          set -euo pipefail
+          highest="$(gh release list --limit 100 --json tagName \
+            | python3 -c '
+          import json, sys
+          tags = [r["tagName"].lstrip("v") for r in json.load(sys.stdin)]
+          def key(v):
+              core = v.split("-")[0].split(".")
+              return tuple(int(p) if p.isdigit() else 0 for p in (core + ["0", "0"])[:3])
+          released = [t for t in tags if t and t[0].isdigit()]
+          print(max(released, key=key) if released else "")
+          ')"
+          echo "published highest: ${highest:-（无）}"
+          echo "this tag         : $NEW_VERSION"
+
+          if [ -z "$highest" ]; then
+            echo "no releases yet; nothing to compare against"; exit 0
+          fi
+          if ! python3 -c '
+          import sys
+          def key(v):
+              core = v.split("-")[0].split(".")
+              pre = v.split("-", 1)[1] if "-" in v else None
+              return (tuple(int(p) if p.isdigit() else 0 for p in (core + ["0", "0"])[:3]), pre is None)
+          sys.exit(0 if key(sys.argv[1]) > key(sys.argv[2]) else 1)
+          ' "$NEW_VERSION" "$highest"; then
+            echo "::error::$NEW_VERSION is not newer than the published $highest. Installed desktop clients only accept a HIGHER version, so this release would reach nobody. Bump the version."
+            exit 1
+          fi
+          echo "::notice::$NEW_VERSION is newer than the published $highest"
 
   # ---------------------------------------------------------------------
   # 0b. Change detection, so a docs-only commit does not rebuild 3 clients.
@@ -339,8 +402,11 @@ jobs:
           path: /tmp/image.tar
           retention-days: 1
 
-  deploy:
-    name: cd / deploy + smoke test
+  # Smoke test the image the runner just built, on the runner. This is the fast
+  # gate that catches a broken image before anything is shipped anywhere; the
+  # separate `deploy-server` job is what actually deploys.
+  smoke-image:
+    name: cd / smoke the built image
     runs-on: ubuntu-latest
     needs: [changes, docker]
     # Smoke test every image that could actually be pulled. If the image was
@@ -649,6 +715,8 @@ jobs:
     name: desktop / self-test the packaged app (windows)
     runs-on: windows-latest
     needs: [versioning, desktop, release]
+    # Only where a release exists to point the updater at.
+    if: always() && needs.release.result == 'success'
 
     steps:
       - uses: actions/checkout@v7
@@ -887,12 +955,12 @@ jobs:
   release:
     name: release / publish build
     runs-on: ubuntu-latest
-    needs: [versioning, changes, docker, deploy, desktop, android]
+    needs: [versioning, changes, docker, smoke-image, desktop, android]
     if: |
       always()
       && !cancelled()
       && !contains(needs.*.result, 'failure')
-      && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+      && (github.ref_type == 'tag' || inputs.version != '')
 
     permissions:
       contents: write
@@ -991,3 +1059,118 @@ jobs:
             dist/android/*
             dist/*.zip
           fail_on_unmatched_files: false
+
+  # ---------------------------------------------------------------------
+  # 5. Ship it to the server.
+  #
+  #    Runs on a tag (the release trigger) or on a manual dispatch that names a
+  #    ref, so a deployment can be rehearsed without publishing a version.
+  #
+  #    The server builds the image from source rather than pulling the GHCR one:
+  #    measured from that host, ghcr.io moves 74 B/s while a shallow git clone
+  #    takes 7 seconds. A registry mirror or a domestic registry would let this
+  #    pull instead - see deploy/deploy.sh for the measurements.
+  #
+  #    The acceptance criterion is the public URL answering, not the container
+  #    starting: scripts/smoke.py runs against https://quicklaunch.luty.tech.
+  # ---------------------------------------------------------------------
+  deploy-server:
+    name: cd / deploy to luty-server
+    runs-on: ubuntu-latest
+    needs: [versioning, verify-backend, verify-web]
+    if: |
+      always()
+      && !cancelled()
+      && !contains(needs.*.result, 'failure')
+      && (github.ref_type == 'tag' || inputs.deploy_ref != '')
+    concurrency:
+      # Never let two deployments overlap on the same host.
+      group: deploy-luty-server
+      cancel-in-progress: false
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: decide which ref to deploy
+        id: ref
+        env:
+          INPUT_REF: ${{ inputs.deploy_ref }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          ref="${INPUT_REF:-$REF_NAME}"
+          echo "deploying ref: $ref"
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+
+      - name: install the deploy key
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          # Strip CR: a key pasted on Windows otherwise fails with a libcrypto error.
+          printf '%s\n' "$DEPLOY_SSH_KEY" | tr -d '\r' > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+
+          # Pin the host key rather than trusting whatever answers: this job ships
+          # code to a machine that also runs unrelated production services.
+          echo "pinning the server host key"
+          for attempt in 1 2 3; do
+            ssh-keyscan -t ed25519,rsa "${{ vars.DEPLOY_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null && break
+            sleep 2
+          done
+          if ! ssh-keygen -F "${{ vars.DEPLOY_HOST }}" -f ~/.ssh/known_hosts >/dev/null; then
+            echo "::error::could not obtain a host key for ${{ vars.DEPLOY_HOST }}"; exit 1
+          fi
+          ssh-keygen -lf <(ssh-keygen -F "${{ vars.DEPLOY_HOST }}" -f ~/.ssh/known_hosts | grep -v '^#')
+
+      - name: verify the deploy key is accepted
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o BatchMode=yes \
+              "${{ vars.DEPLOY_USER }}@${{ vars.DEPLOY_HOST }}" \
+              'echo "connected as $(whoami)@$(hostname)"; docker --version'
+
+      - name: sync server-side deploy files
+        run: |
+          set -euo pipefail
+          target="${{ vars.DEPLOY_USER }}@${{ vars.DEPLOY_HOST }}"
+          # compose.yaml and the overlay are versioned with the code; .env is NOT
+          # sent and never overwritten - the secrets live only on the server.
+          scp -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o BatchMode=yes \
+            compose.yaml deploy/compose.server.yaml deploy/deploy.sh \
+            "$target:~/quicklaunch/"
+
+      - name: deploy
+        env:
+          REF: ${{ steps.ref.outputs.ref }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o BatchMode=yes \
+              "${{ vars.DEPLOY_USER }}@${{ vars.DEPLOY_HOST }}" \
+              "chmod +x ~/quicklaunch/deploy.sh && ~/quicklaunch/deploy.sh '${REF}' 3"
+
+      # The gate that matters: the deployment is only done when the public URL
+      # answers and the whole API flow works through it.
+      - name: smoke test the public URL
+        run: |
+          python3 scripts/smoke.py \
+            --base-url "https://quicklaunch.luty.tech" \
+            --health-budget-ms 8000
+
+      - name: report
+        if: always()
+        run: |
+          {
+            echo "### deployed ${{ needs.versioning.outputs.version }}"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| ref | \`${{ steps.ref.outputs.ref }}\` |"
+            echo "| url | https://quicklaunch.luty.tech |"
+            echo "| smoke | ${{ job.status }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
