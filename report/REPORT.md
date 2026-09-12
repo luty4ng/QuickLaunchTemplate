@@ -3,6 +3,8 @@
 > 交付对象：`luty4ng/QuickLaunchTemplate`（GitHub，公开）
 > 目标：一个 Demo，跑通「一条 CI/CD 管线自动发布网页端 / 桌面端 / 安卓端」，后端用 FastAPI，
 > 实现尽量简洁、高效、省心、可扩展。
+> 发布策略演进：最初三端全发；按实际需求改为**默认只发 Windows 桌面端 + 网页端，
+> 安卓端与 Linux 桌面端由开关控制**（见 §12）。
 
 ---
 
@@ -14,22 +16,25 @@
 |---|---|---|
 | 后端（FastAPI，含迁移、认证、租户隔离） | `backend/` | ✅ 本地 45 个测试通过，CI 在 Postgres 16 上再跑一遍 |
 | 网页端（同一个 React 产物，由后端直接托管） | `web/` | ✅ 11 个单测通过，镜像内含构建产物 |
-| 桌面端（Electron，Windows/Linux 安装包） | `desktop/` | ✅ 产物自检通过（在 CI 的 Windows runner 上真跑起来） |
-| 安卓端（Capacitor，可安装 APK） | `mobile/` | ✅ CI 产出并校验包名与内嵌前端产物 |
-| 一条管线（CI + CD，单文件） | `.github/workflows/pipeline.yml` | ✅ 10 个 job 全绿（run #34651815693） |
-| 一条 Release（6 个可下载产物） | [build-12](https://github.com/luty4ng/QuickLaunchTemplate/releases/tag/build-12) | ✅ |
+| 桌面端（Electron，Windows 默认发布、Linux 可选） | `desktop/` | ✅ 产物自检通过（在 CI 的 Windows runner 上真跑起来），并支持一键自动更新 |
+| 安卓端（Capacitor，可安装 APK，默认不发布） | `mobile/` | ✅ 开关打开后 CI 产出并校验包名与内嵌前端产物 |
+| 一条管线（CI + CD，单文件 + 发布开关） | `.github/workflows/pipeline.yml` | ✅ 11 个 job（含 versioning）全绿 |
+| 一条 Release（默认 5 个可下载产物） | [v1.0.38](https://github.com/luty4ng/QuickLaunchTemplate/releases/tag/v1.0.38) | ✅ |
 
 关键运行记录（全部是真实执行，可在仓库 Actions / Releases / Packages 页复核）：
 
 | 运行 | 结果 | 说明 |
 |---|---|---|
-| [#34651815693](https://github.com/luty4ng/QuickLaunchTemplate/actions/runs/34651815693) | ✅ 全绿 | 首个完整成功的端到端管线（10 个 job 全部真实执行），产出镜像 + 三端产物 + Release |
-| [#34655397546](https://github.com/luty4ng/QuickLaunchTemplate/actions/runs/34655397546) | ✅ 全绿 | 最终状态；同时验证了变更检测（后端未改 → 跳过）与产物复用 |
+| [#34651815693](https://github.com/luty4ng/QuickLaunchTemplate/actions/runs/34651815693) | ✅ 全绿 | 首个完整成功的端到端管线（当时 10 个 job 全部真实执行），产出镜像 + 三端产物 + Release |
+| [#34677071586](https://github.com/luty4ng/QuickLaunchTemplate/actions/runs/34677071586) | ✅ 全绿 | **默认发布行为**：安卓跳过、Linux 绿色 no-op，Release 只含 Windows + 网页端 |
+| [#34677377502](https://github.com/luty4ng/QuickLaunchTemplate/actions/runs/34677377502) | ✅ 全绿 | **打开开关**：`publish_android` + `publish_linux`，四端全部构建并发布 |
+| [#34675833510](https://github.com/luty4ng/QuickLaunchTemplate/actions/runs/34675833510) | ✅ 全绿 | **更新路径验证**：低版本客户端读到线上 feed → `update-available` |
 | [#34652578016](https://github.com/luty4ng/QuickLaunchTemplate/actions/runs/34652578016) | ❌ 按预期变红 | 故意塞类型错误 → `verify-web / typecheck` 拦住 |
 | [#34652632864](https://github.com/luty4ng/QuickLaunchTemplate/actions/runs/34652632864) | ❌ 按预期变红 | 故意塞无用 import → `verify-backend / lint` 拦住 |
 | [#34652715044](https://github.com/luty4ng/QuickLaunchTemplate/actions/runs/34652715044) | ❌ 按预期变红 | 故意破坏租户隔离 → `verify-backend / integration` 拦住 |
 
-最新 Release：[build-23](https://github.com/luty4ng/QuickLaunchTemplate/releases/tag/build-23)。
+最新 Release：[v1.0.39](https://github.com/luty4ng/QuickLaunchTemplate/releases/tag/v1.0.39)（四端全发布）。
+默认发布形态见 [v1.0.38](https://github.com/luty4ng/QuickLaunchTemplate/releases/tag/v1.0.38)（仅 Windows + 网页端）。
 
 > 「一条永远绿的管线，和不存在的管线可信度一样。」——所以上面三条反向验证是本次交付的重点之一。
 
@@ -192,7 +197,7 @@ CI 与 CD 放在**同一个文件**里用 `needs:` 串联——拆成两个文�
 
 ### 4.5 三端打包：`desktop` / `desktop-self-test` / `android`
 
-- `desktop` 是**按宿主 OS 拆开的 matrix**：Windows runner 出 `.exe`（NSIS 安装包 + 便携版 + zip），
+- `desktop` 是**按宿主 OS 拆开的 matrix**：Windows runner 出 `.exe`（NSIS 安装包 + 免安装 zip），
   Linux runner 出 `.AppImage` + `.deb`。跨平台出 Windows 安装包需要 Wine，而 Linux runner 上没有，
   会以 `spawn wine ENOENT` 失败——「哪个系统就出哪个系统的安装包」这个约束反而更简单可靠。
 - `desktop-self-test` 在 windows-latest 上真跑打包产物（见 §3.4）。
@@ -200,18 +205,24 @@ CI 与 CD 放在**同一个文件**里用 `needs:` 串联——拆成两个文�
 
 ### 4.6 汇总：`release`
 
-只在默认分支成功时执行：下载全部 artifact，打成 Release（tag 为 `build-<run number>`），
-当前是 [build-12](https://github.com/luty4ng/QuickLaunchTemplate/releases/tag/build-12)，包含：
+只在默认分支成功时执行：只下载**本次要发布的** artifact，打成 Release
+（tag 为 `v<version>`，版本号取自运行号 `1.0.<run number>`）。
+
+默认发布（Windows + 网页端）的产物清单，以
+[v1.0.38](https://github.com/luty4ng/QuickLaunchTemplate/releases/tag/v1.0.38) 为例，共 5 个：
 
 | 产物 | 大小 |
 |---|---|
-| `QuickLaunch-Setup-1.0.0-x64.exe`（Windows 安装包） | 111.4 MB |
-| `QuickLaunch-Portable-1.0.0-x64.exe`（Windows 便携版） | 111.2 MB |
-| `QuickLaunch-1.0.0-win.zip`（Windows 免安装解压即用） | 153.1 MB |
-| `QuickLaunch-1.0.0-x86_64.AppImage`（Linux） | 125.0 MB |
-| `QuickLaunch-1.0.0-amd64.deb`（Debian/Ubuntu） | 98.8 MB |
-| `app-debug.apk`（安卓，debug 签名可直接安装） | 4.2 MB |
-| `web-5df3e84.zip`（静态前端包） | 0.1 MB |
+| `QuickLaunch-Setup-1.0.38-x64.exe`（Windows 安装包，自动更新的下载目标） | 111.7 MB |
+| `QuickLaunch-Setup-1.0.38-x64.exe.blockmap`（增量下载用） | 0.1 MB |
+| `QuickLaunch-1.0.38-win.zip`（免安装解压即用） | 153.6 MB |
+| `latest.yml`（更新源清单，客户端读它判断有无新版） | < 0.1 MB |
+| `web-c7eb03b.zip`（静态网页包） | 0.1 MB |
+
+打开可选目标后（`publish_android` / `publish_linux`），
+[v1.0.39](https://github.com/luty4ng/QuickLaunchTemplate/releases/tag/v1.0.39) 共 9 个，
+额外包含 `app-debug.apk`（4.2 MB）、`QuickLaunch-1.0.39-x86_64.AppImage`（125.5 MB）、
+`QuickLaunch-1.0.39-amd64.deb`（99.1 MB）、`latest-linux.yml`。详见 §12。
 
 后端/网页端的「发布」形态是容器镜像：`ghcr.io/luty4ng/quicklaunchtemplate:sha-<commit>`（公开可拉）。
 
@@ -354,21 +365,27 @@ desktop-self-test 30s、release 26s。
 ## 10. 复核指引（想自己验证的话）
 
 ```bash
-# 1. 看最后一次全绿的管线（10 个 job，5.0 min）
-open https://github.com/luty4ng/QuickLaunchTemplate/actions/runs/34655397546
+# 1. 看当前默认行为下的全绿管线（Windows + 网页端，安卓/Linux 跳过）
+open https://github.com/luty4ng/QuickLaunchTemplate/actions/runs/34677071586
 
-# 2. 看三端产物
-open https://github.com/luty4ng/QuickLaunchTemplate/releases/tag/build-23
+# 2. 看打开开关后的全绿管线（四端全过）
+open https://github.com/luty4ng/QuickLaunchTemplate/actions/runs/34677377502
 
-# 3. 看镜像（公开可拉）
+# 3. 看默认发布的产物（5 个）
+open https://github.com/luty4ng/QuickLaunchTemplate/releases/tag/v1.0.38
+
+# 4. 看打开开关后的产物（9 个，含 APK / deb / AppImage）
+open https://github.com/luty4ng/QuickLaunchTemplate/releases/tag/v1.0.39
+
+# 5. 看镜像（公开可拉）
 docker pull ghcr.io/luty4ng/quicklaunchtemplate:latest
 
-# 4. 看门禁能变红（三条反向验证，已关闭 PR，运行记录永久保留）
+# 6. 看门禁能变红（三条反向验证，已关闭 PR，运行记录永久保留）
 open https://github.com/luty4ng/QuickLaunchTemplate/actions/runs/34652578016   # 类型错误
 open https://github.com/luty4ng/QuickLaunchTemplate/actions/runs/34652632864   # lint 错误
 open https://github.com/luty4ng/QuickLaunchTemplate/actions/runs/34652715044   # 越权
 
-# 5. 本机跑一遍（无需 Docker）
+# 7. 本机跑一遍（无需 Docker）
 python -m venv .venv && .venv/Scripts/pip install -r backend/requirements-dev.txt
 cd web && npm ci && npm run build && cd ..
 cd backend && DATABASE_URL=sqlite+aiosqlite:///./data/dev.db \
@@ -377,8 +394,8 @@ cd backend && DATABASE_URL=sqlite+aiosqlite:///./data/dev.db \
 python scripts/smoke.py --base-url http://127.0.0.1:8000
 ```
 
-> 交付状态：**完成**。最后一次提交为 `a6f8206`，main 分支干净（无未提交改动、
-> 无遗留分支、无开启的 PR），全部实验分支与测试用的 draft release 已删除，
+> 交付状态：**完成**。main 分支干净（无未提交改动、无遗留分支、无开启的 PR），
+> 全部实验分支与测试用的 draft release 已删除，
 > 未对任何其他仓库发起写操作。
 
 ---
@@ -413,7 +430,9 @@ python scripts/smoke.py --base-url http://127.0.0.1:8000
 （用 `workflow_dispatch` 指定一个比线上低的版本 + draft release，跑完即删）。
 
 **唯一没有实测的一环**：`quitAndInstall()` 真正拉起安装器那一下（原因见 §9 第 4 条）。
-你在真机上装一次 `QuickLaunch-Setup-1.0.33-x64.exe`，等有新构建时点一下按钮即可确认。
+你在真机上装一次最新 Release 里的 `QuickLaunch-Setup-<version>-x64.exe`
+（当前是 [v1.0.39](https://github.com/luty4ng/QuickLaunchTemplate/releases/tag/v1.0.39)），
+等有新构建时点一下按钮即可确认。
 
 **注意**：未做代码签名，所以安装和更新时会弹一次 SmartScreen 警告；更新功能本身不受影响。
 
