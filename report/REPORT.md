@@ -21,7 +21,7 @@
 | 桌面端（Electron，Windows 默认发布、Linux 可选） | `desktop/` | ✅ 产物自检通过（在 CI 的 Windows runner 上真跑起来），并支持一键自动更新 |
 | 安卓端（Capacitor，可安装 APK，默认不发布） | `mobile/` | ✅ 开关打开后 CI 产出并校验包名与内嵌前端产物 |
 | 一条管线（CI + CD，单文件 + 发布开关 + tag 门禁） | `.github/workflows/pipeline.yml` | ✅ 11 个 job（含 versioning）全绿 |
-| 一条 Release（默认 5 个可下载产物） | [v1.2.0](https://github.com/luty4ng/QuickLaunchTemplate/releases/tag/v1.2.0) | ✅ 由 tag 触发，同时部署上线 |
+| 一条 Release（默认 5 个可下载产物） | [v1.2.1](https://github.com/luty4ng/QuickLaunchTemplate/releases/tag/v1.2.1) | ✅ 由 tag 触发，同时部署上线 |
 | **线上部署**（Traefik + Let's Encrypt + compose） | https://quicklaunch.luty.tech | ✅ 公网冒烟 23/23（未配置支付时的状态） |
 | **订阅支付**（Stripe，Free/Plus/Pro 只差额度） | `backend/app/billing/`、`web/src/components/PlanPanel.tsx` | ✅ 流水线每次构建都在替身支付方上跑完整链路 |
 
@@ -32,7 +32,8 @@
 | [#34651815693](https://github.com/luty4ng/QuickLaunchTemplate/actions/runs/34651815693) | ✅ 全绿 | 首个完整成功的端到端管线（当时 10 个 job 全部真实执行），产出镜像 + 三端产物 + Release |
 | [#34677071586](https://github.com/luty4ng/QuickLaunchTemplate/actions/runs/34677071586) | ✅ 全绿 | **默认发布行为**：安卓跳过、Linux 绿色 no-op，Release 只含 Windows + 网页端 |
 | [#34677377502](https://github.com/luty4ng/QuickLaunchTemplate/actions/runs/34677377502) | ✅ 全绿 | **打开开关**：`publish_android` + `publish_linux`，四端全部构建并发布 |
-| [#34689001392](https://github.com/luty4ng/QuickLaunchTemplate/actions/runs/34689001392) | ✅ 全绿 | **tag 驱动的首次发布 + 真实部署**：`v1.1.0` 上线，容器版本与 tag 指向的提交一致 |
+| [#34691719517](https://github.com/luty4ng/QuickLaunchTemplate/actions/runs/34691719517) | ✅ 全绿 | **支付链路端到端**：替身支付方上跑通下单→付款→签名 webhook→开通→取消（28/28） |
+| [#34693927161](https://github.com/luty4ng/QuickLaunchTemplate/actions/runs/34693927161) | ✅ 全绿 | **tag `v1.2.1` 的完整发布 + 部署**：全量测试、镜像冒烟、桌面端打包与自检、部署上线、公网冒烟门禁 |
 | [#34652578016](https://github.com/luty4ng/QuickLaunchTemplate/actions/runs/34652578016) | ❌ 按预期变红 | 故意塞类型错误 → `verify-web / typecheck` 拦住 |
 | [#34652632864](https://github.com/luty4ng/QuickLaunchTemplate/actions/runs/34652632864) | ❌ 按预期变红 | 故意塞无用 import → `verify-backend / lint` 拦住 |
 | [#34652715044](https://github.com/luty4ng/QuickLaunchTemplate/actions/runs/34652715044) | ❌ 按预期变红 | 故意破坏租户隔离 → `verify-backend / integration` 拦住 |
@@ -284,8 +285,8 @@ CI 与 CD 放在**同一个文件**里用 `needs:` 串联——拆成两个文�
 | 故意破坏隔离 → 集成测试必须变红 | ✅ | run #34652715044，且**只有**隔离用例失败（41 passed / 4 failed） |
 | `main` 产出镜像，两个 tag 都在 GHCR | ✅ | `ghcr.io/luty4ng/quicklaunchtemplate`：`sha-<commit>` + `latest`，公开 |
 | 镜像启动后 `/api/health` 返回 200 且 < 1s | ✅ | 20–28 ms；并且 Docker 自身 HEALTHCHECK 也报 healthy |
-| 冒烟用例在部署后的真实地址上通过 | ✅ | 17/17（新版本）、16/16（回滚版本） |
-| 用上一个 `sha-` tag 重新部署，服务恢复正常 | ✅ | 回滚演练：`sha-3cd811b` 重新部署后 16/16 通过，CI 输出 `::notice::rollback rehearsal passed` |
+| 冒烟用例在部署后的真实地址上通过 | ✅ | **28/28**（CI 临时栈，含支付链路）/ **23/23**（公网 `https://quicklaunch.luty.tech`，未配支付） |
+| 用上一个 `sha-` tag 重新部署，服务恢复正常 | ✅ | 回滚演练：`sha-3cd811b` 重新部署后通过，CI 输出 `::notice::rollback rehearsal passed`；真实回滚锚点 `quicklaunch:0970e6d` 也仍在服务器上 |
 
 ---
 
@@ -304,17 +305,22 @@ CI 与 CD 放在**同一个文件**里用 `needs:` 串联——拆成两个文�
 | **CI 门禁（前端 job）** | **19 s** | run #34651815693（改动前端时） |
 | 镜像构建 + 推送 GHCR | **55 s** | run #34691719517 |
 | 起栈 + 迁移 + 冒烟 + 回滚演练 | **54 s** | 同上 |
-| 桌面端打包（Windows） | **12 分 35 秒**（冷缓存） | 同上 |
-| 完整管线（分支推送） | **12 分 42 秒**，关键路径就是 Windows 打包 | 同上（11:44:13 → 11:56:55） |
+| 桌面端打包（Windows） | **197 s**（缓存热）/ **755 s**（冷缓存） | run #34693927161 / #34691719517 |
+| **完整 tag 发布 + 部署（12 个 job）** | **294 s ≈ 4.9 分钟** | run #34693927161 |
+| 部署到服务器（同步文件 + 服务器构建 + 迁移 + 上线 + 容器自检） | **102 s** | 同上 |
 | 失败反馈速度 | **28–32 s 变红，下游全部 skipped** | run #34652632864 |
 
-> 关于 Windows 打包这 12 分半：npm 依赖有缓存，但 **Electron 与 electron-builder 的二进制
-> 没有缓存**（`~/AppData/Local/electron{,-builder}/Cache`），冷 runner 每次都要重新下载
-> 上百 MB，所以单次耗时在 3–13 分钟之间浮动。这是管线里唯一的长尾，
-> 修法也很直接（把这两个目录也加进 `actions/cache`）——留作后续优化，没有为它推迟发版。
+各 job 耗时（tag 发布 run #34693927161）：changes 5s、versioning 6s、web 21s、backend 45s、
+desktop(linux) 3s（关闭时 no-op）、desktop(windows) 197s、docker 48s、smoke-image 52s、
+**deploy-server 102s**、release 33s、desktop-self-test 23s。
 
-各 job 耗时明细（run #34691719517）：changes 4s、versioning 3s、backend 40s、
-desktop(linux) 4s（关闭时是 no-op）、desktop(windows) 755s、docker 55s、smoke-image 54s。
+各 job 耗时（分支推送 run #34691719517）：changes 4s、versioning 3s、backend 40s、
+desktop(windows) 755s、docker 55s、smoke-image 54s。
+
+> 关于 Windows 打包 197 s 与 755 s 的差别：npm 依赖有缓存，但 **Electron 与 electron-builder
+> 的二进制缓存不住**（`~/AppData/Local/electron{,-builder}/Cache`），冷 runner 要重新下载
+> 上百 MB。它是管线里唯一的长尾，修法很直接（把这两个目录也加进 `actions/cache`）——
+> 留作后续优化，没有为它推迟发版。
 
 > 说明：CI 门禁本身（19 s / 40 s）远优于 DESIGN.md 的「< 3 分钟」基线；
 > 「构建镜像 → 起真实栈 → 冒烟 → 回滚演练」这 109 s 满足 < 5 分钟基线。
@@ -381,12 +387,12 @@ desktop(linux) 4s（关闭时是 no-op）、desktop(windows) 755s、docker 55s�
 curl -sS -o /dev/null -w '%{http_code} %{ssl_verify_result}\n' https://quicklaunch.luty.tech/
 curl -sS https://quicklaunch.luty.tech/api/health
 
-# 2. 看 tag 触发的全绿管线（发布 + 部署 + 公网冒烟）
-open https://github.com/luty4ng/QuickLaunchTemplate/actions/runs/34693476660   # 部署 + 公网冒烟门禁
-open https://github.com/luty4ng/QuickLaunchTemplate/actions/runs/34692410445   # tag v1.2.0 的发布（下载页产物）
+# 2. 看 tag 触发的全绿管线（全量验证 + 发布 + 部署 + 公网冒烟）
+open https://github.com/luty4ng/QuickLaunchTemplate/actions/runs/34693927161   # v1.2.1：12 个 job 全绿
+open https://github.com/luty4ng/QuickLaunchTemplate/actions/runs/34693476660   # 只部署不发版（deploy_ref）
 
 # 3. 看 tag 发布的产物（5 个：安装包、zip、blockmap、latest.yml、web zip）
-open https://github.com/luty4ng/QuickLaunchTemplate/releases/tag/v1.2.0
+open https://github.com/luty4ng/QuickLaunchTemplate/releases/tag/v1.2.1
 
 # 4. 看开关打开后四端全发布的产物（9 个，含 APK / deb / AppImage）
 open https://github.com/luty4ng/QuickLaunchTemplate/releases/tag/v1.0.39
@@ -583,21 +589,27 @@ CI 每次部署都会**演练一遍回滚**（重新部署上一个 `sha-` tag �
 - 所有写操作限制在 `~/quicklaunch/` 目录内；
 - 不执行任何破坏性动作（无 `down -v`、无 `rm -rf`、无系统级改动），重启类操作不做。
 
-### 13.5 上线记录（v1.2.0）
+### 13.5 上线记录（v1.2.1，当前线上版本）
 
 | 步骤 | 结果 |
 |---|---|
-| tag `v1.2.0` 推送（run [#34692410445](https://github.com/luty4ng/QuickLaunchTemplate/actions/runs/34692410445)） | 镜像、Windows 产物、Release + `latest.yml` 全部成功；**部署这一步失败**（取源码被掐断，见上表） |
-| 修好取源码后单独复跑部署（run [#34693476660](https://github.com/luty4ng/QuickLaunchTemplate/actions/runs/34693476660)，`workflow_dispatch -f deploy_ref=v1.2.0`，不打新 tag） | `deploy` 成功 + **公网冒烟门禁通过** |
-| 服务器上的版本 | `quicklaunch:62bb66b`（= tag 指向的提交），app healthy、db healthy |
-| 迁移 | `0002_billing`（订阅档位与 webhook 幂等表）在部署过程中作为独立一步执行，成功 |
-| 公网冒烟 | **23/23**（`https://quicklaunch.luty.tech`，未配置支付时的状态；其中包含「未配置支付时 checkout 必须返回 503」这一项） |
+| tag `v1.2.1` 推送（run [#34693927161](https://github.com/luty4ng/QuickLaunchTemplate/actions/runs/34693927161)） | **12 个 job 全绿**：后端 94 测试、前端 20 测试、镜像冒烟（含支付链路 28/28）、Windows 打包、桌面端真跑自检、部署上线、公网冒烟门禁 |
+| 部署日志里的取源码方式 | `git fetch（第 1 次）`——重试机制没被触发，但它在（v1.2.0 那次就是缺了它） |
+| 服务器上的版本 | `quicklaunch:737aa07`（= tag 指向的提交），app healthy、db healthy |
+| 迁移 | `0002_billing` 作为独立一步执行成功 |
+| Release | `v1.2.1`，**5 个产物**：安装包、免安装 zip、blockmap、`latest.yml`（version: 1.2.1）、`web-737aa07.zip` |
+| 公网冒烟 | **23/23**（含「未配置支付时 checkout 必须返回 503」一项）；`/api/health` 118 ms |
 | 其他服务 | `9router`、`homepage`、`traefik` 均未受影响，Traefik 配置未改动 |
 
-**这次失败本身值得记下来**：部署脚本的失败没有把站点打挂（构建成功前不切换容器），
-线上在失败期间一直正常服务旧版本——「失败即停、不半途切换」的设计在真实故障里生效了。
-另外它也暴露了一个只有真跑才会出现的问题：**断网重试不是可选项**，
-在这台服务器上它是部署路径的一部分。
+**v1.2.0 的失败也留着，因为它更说明问题**：那次 tag 的部署死在
+`GnuTLS recv error (-110)`（服务器到 github.com 的链路被掐断），而且发布本身
+「跳过测试、没有冒烟镜像、少了静态前端包」——因为那个 tag 只改了文档，路径过滤器
+顺手把发布内容削减了。两件事都不是靠读代码能发现的，是**真跑**发现的：
+
+1. 失败没有把站点打挂：构建成功前不切换容器，线上在失败期间一直正常服务旧版本；
+2. 「断网重试」在这台服务器上是部署路径的一部分，不是可选项；
+3. 「一次 tag = 全套验证 + 全套产物」必须由代码保证（`changes` job 里的 `scope` 一步），
+   否则过滤器会在发布时悄悄削减内容。
 
 ---
 
