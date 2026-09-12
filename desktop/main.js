@@ -1,6 +1,6 @@
 // Minimal, security-first Electron shell.
 //
-// The renderer is the exact same bundle the web deployment serves. Three things
+// The renderer is the exact same bundle the web deployment serves. Four things
 // differ from the browser case, and all of them are handled here rather than in
 // the UI:
 //   * the bundle is served over a custom `app://` protocol instead of file://.
@@ -10,14 +10,17 @@
 //     runner. A registered protocol makes the bundle a normal origin.
 //   * the API origin comes from `QL_API_BASE` (build time) or the in-app
 //     "Server" setting (runtime);
-//   * it gets no Node integration - only a tiny preload surface.
+//   * it gets no Node integration - only a tiny preload surface;
+//   * it updates itself: electron-updater reads `latest.yml` from this
+//     repository's GitHub Releases, downloads the installer in the background and
+//     installs it on one click. See `setupAutoUpdate` below.
 //
 // `--ql-self-test` turns the app into its own integration test: boot, wait for
 // React to mount, call the API from inside the renderer, write a JSON report and
 // exit. That is how CI proves the packaged artifact works, not just that it
 // built. See the `desktop-self-test` job in .github/workflows/pipeline.yml.
 
-const { app, BrowserWindow, protocol, net, shell, Menu } = require('electron')
+const { app, BrowserWindow, ipcMain, protocol, net, shell, Menu } = require('electron')
 const path = require('node:path')
 const fs = require('node:fs')
 const { pathToFileURL } = require('node:url')
@@ -30,6 +33,18 @@ const SELF_TEST = process.argv.includes('--ql-self-test')
 const SELF_TEST_REPORT = (
   process.argv.find((value) => value.startsWith('--ql-self-test-report=')) ?? ''
 ).slice('--ql-self-test-report='.length)
+// Let a packaging job switch the update check off when the release it would look
+// for does not exist yet.
+const UPDATE_CHECK = process.env.QL_UPDATE_CHECK !== 'false'
+// The self-test only wants to know what the feed offers; downloading a 110 MB
+// installer (and then not installing it) is not part of proving detection.
+const UPDATE_AUTODOWNLOAD = process.env.QL_UPDATE_AUTODOWNLOAD !== 'false'
+// Points the updater at a specific feed file. Used to test against a published
+// release without depending on which release GitHub considers newest, and to
+// test a lower version without publishing anything.
+const UPDATE_FEED_URL = process.env.QL_UPDATE_FEED_URL
+
+const { isNewer, compareVersions } = require('./lib/version')
 
 const SCHEME = 'app'
 const ENTRY = `${SCHEME}://bundle/index.html`
@@ -47,6 +62,115 @@ if (SELF_TEST) app.disableHardwareAcceleration()
 if (SELF_TEST && process.platform === 'win32') {
   app.commandLine.appendSwitch('no-sandbox')
   app.commandLine.appendSwitch('disable-gpu')
+}
+
+// ---------------------------------------------------------------------------
+// Auto-update: one click from "there is a new version" to "running it".
+//
+//   launch -> silent check -> background download -> "Restart and update"
+//
+// The feed is this repository's own GitHub Releases. electron-updater reads
+// `latest.yml` from the newest release and compares its `version` with the
+// running app's, so a release only reaches installed clients when its version is
+// strictly higher than theirs - which is why the packaging job stamps a version
+// instead of shipping every build as 1.0.0.
+// ---------------------------------------------------------------------------
+
+let autoUpdater = null
+let updateState = { status: 'idle', currentVersion: null }
+
+function publishState(patch) {
+  updateState = { ...updateState, ...patch, currentVersion: app.getVersion() }
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) window.webContents.send('ql:update-state', updateState)
+  }
+  if (SELF_TEST) console.log(`QL_UPDATE_STATE ${JSON.stringify(updateState)}`)
+}
+
+function setupAutoUpdate() {
+  if (!UPDATE_CHECK) {
+    publishState({ status: 'disabled', reason: 'update check disabled for this build' })
+    return
+  }
+  try {
+    // Required lazily so `npm start` (unpackaged, no updater config) still runs.
+    autoUpdater = require('electron-updater').autoUpdater
+  } catch (error) {
+    publishState({ status: 'disabled', reason: `electron-updater unavailable: ${error.message}` })
+    return
+  }
+
+  autoUpdater.autoDownload = UPDATE_AUTODOWNLOAD
+  autoUpdater.autoInstallOnAppQuit = true
+  if (UPDATE_FEED_URL) {
+    // Testing hook: read one specific latest.yml instead of guessing which
+    // release GitHub calls newest.
+    autoUpdater.setFeedURL({ provider: 'generic', url: UPDATE_FEED_URL })
+  }
+
+  autoUpdater.on('checking-for-update', () => publishState({ status: 'checking' }))
+  autoUpdater.on('update-available', (info) => publishState({ status: 'downloading', version: info.version }))
+  autoUpdater.on('update-not-available', (info) => publishState({ status: 'up-to-date', version: info.version }))
+  autoUpdater.on('download-progress', (progress) =>
+    publishState({ percent: Math.round(progress.percent), status: 'downloading' }),
+  )
+  autoUpdater.on('update-downloaded', (info) =>
+    publishState({ status: 'ready', version: info.version, percent: 100 }),
+  )
+  autoUpdater.on('error', (error) => publishState({ status: 'error', error: String(error?.message ?? error) }))
+
+  publishState({ status: 'idle' })
+  // Deliberately not awaited: the window must never wait on the network.
+  autoUpdater
+    .checkForUpdates()
+    .catch((error) => publishState({ status: 'error', error: String(error.message) }))
+}
+
+function registerUpdateIpc() {
+  ipcMain.handle('ql:update-state', () => updateState)
+  ipcMain.handle('ql:update-check', async () => {
+    if (!autoUpdater) return updateState
+    try {
+      await autoUpdater.checkForUpdates()
+    } catch (error) {
+      publishState({ status: 'error', error: String(error.message) })
+    }
+    return updateState
+  })
+  ipcMain.handle('ql:update-install', () => {
+    if (!autoUpdater) return false
+    // isSilent=false, isForceRunAfter=true: install, then start the new build.
+    autoUpdater.quitAndInstall(false, true)
+    return true
+  })
+}
+
+/**
+ * Ask the real update feed what the newest published version is.
+ *
+ * This is electron-updater's own check, so it exercises the real provider
+ * (GitHub Releases), the real `latest.yml` and the real version comparison -
+ * rather than my idea of what those should look like. With autoDownload off it
+ * stops after the check.
+ */
+async function readUpdateFeed() {
+  if (!autoUpdater) return { ok: false, reason: 'updater not initialised' }
+  const current = app.getVersion()
+  try {
+    const result = await autoUpdater.checkForUpdates()
+    const offered = result?.updateInfo?.version ?? null
+    return {
+      ok: true,
+      current,
+      offered,
+      // What the app would do with that answer, computed locally so the decision
+      // is visible even when autoDownload is off.
+      decision: offered === null ? 'unknown' : isNewer(offered, current) ? 'update-available' : 'up-to-date',
+      comparison: offered === null ? null : compareVersions(offered, current),
+    }
+  } catch (error) {
+    return { ok: false, current, error: String(error?.message ?? error) }
+  }
 }
 
 /** Packaged: resources/web-dist. Unpackaged (`npm start`): ./web-dist. */
@@ -225,8 +349,22 @@ async function runSelfTest(window) {
     result.checks.apiReachable =
       probes.credentialed.ok === true || probes.plain.ok === true || probes.mainProcess.ok === true
 
+    // Update feed: proves the packaged app can reach the real GitHub Releases,
+    // parse latest.yml and decide correctly whether it is behind. The decision
+    // itself may legitimately be either answer, so the check asserts that a
+    // decision was reached from a readable feed - and the answer is recorded.
+    if (UPDATE_CHECK) {
+      const feed = await readUpdateFeed()
+      result.checks.updateDetection = feed.ok === true && feed.decision !== 'unknown'
+      result.debug.updateFeed = feed
+      if (!feed.ok) result.reason = `update feed unreadable: ${feed.error ?? feed.reason}`
+    } else {
+      result.checks.updateDetection = true
+      result.debug.updateFeed = { ok: true, decision: 'disabled' }
+    }
+
     result.ok = Object.values(result.checks).every(Boolean)
-    if (!result.ok) result.reason = 'one or more checks failed'
+    if (!result.ok && !result.reason) result.reason = 'one or more checks failed'
   } catch (error) {
     result.reason = error.message
   }
@@ -258,7 +396,9 @@ function finish(result) {
 app.whenReady().then(() => {
   Menu.setApplicationMenu(null)
   registerBundleProtocol()
+  registerUpdateIpc()
   createWindow()
+  setupAutoUpdate()
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })

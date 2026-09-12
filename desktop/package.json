@@ -10,13 +10,19 @@
     "email": "luty4ng@users.noreply.github.com"
   },
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/luty4ng/QuickLaunchTemplate.git"
+  },
   "scripts": {
     "stage": "node scripts/stage-web.mjs",
+    "stamp": "node scripts/stamp-version.mjs",
     "start": "npm run stage && electron .",
     "pack": "npm run stage && electron-builder --dir",
     "dist": "npm run stage && electron-builder --win --linux",
     "dist:win": "npm run stage && electron-builder --win",
-    "dist:linux": "npm run stage && electron-builder --linux"
+    "dist:linux": "npm run stage && electron-builder --linux",
+    "test": "node --test lib/version.test.js"
   },
   "build": {
     "appId": "dev.quicklaunch.desktop",
@@ -25,13 +31,32 @@
       "output": "release",
       "buildResources": "build"
     },
-    "files": ["main.js", "preload.js", "package.json"],
-    "extraResources": [{ "from": "web-dist", "to": "web-dist" }],
+    "files": [
+      "main.js",
+      "preload.js",
+      "lib/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "web-dist",
+        "to": "web-dist"
+      }
+    ],
     "win": {
       "target": [
-        { "target": "nsis", "arch": ["x64"] },
-        { "target": "portable", "arch": ["x64"] },
-        { "target": "zip", "arch": ["x64"] }
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64"
+          ]
+        }
       ]
     },
     "nsis": {
@@ -39,16 +64,24 @@
       "allowToChangeInstallationDirectory": true,
       "artifactName": "QuickLaunch-Setup-${version}-${arch}.${ext}"
     },
-    "portable": {
-      "artifactName": "QuickLaunch-Portable-${version}-${arch}.${ext}"
-    },
     "linux": {
-      "target": ["AppImage", "deb"],
+      "target": [
+        "AppImage",
+        "deb"
+      ],
       "category": "Utility",
       "maintainer": "QuickLaunch <luty4ng@users.noreply.github.com>",
       "artifactName": "QuickLaunch-${version}-${arch}.${ext}"
     },
-    "publish": null
+    "publish": {
+      "provider": "github",
+      "owner": "luty4ng",
+      "repo": "QuickLaunchTemplate",
+      "releaseType": "release"
+    }
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.9"
   },
   "devDependencies": {
     "electron": "^44.3.0",

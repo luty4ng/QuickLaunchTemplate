@@ -36,12 +36,49 @@ export class ApiError extends Error {
 
 const RUNTIME_OVERRIDE_KEY = 'quicklaunch.apiBase'
 
+/**
+ * The desktop shell's update surface (`desktop/preload.js`).
+ *
+ * Absent on the web and Android targets, so every consumer treats the whole
+ * object as optional and renders nothing without it.
+ */
+export type UpdateStatus =
+  | 'idle'
+  | 'checking'
+  | 'up-to-date'
+  | 'downloading'
+  | 'ready'
+  | 'error'
+  | 'disabled'
+
+export type UpdateState = {
+  status: UpdateStatus
+  currentVersion?: string | null
+  version?: string
+  percent?: number
+  error?: string
+  reason?: string
+}
+
+export type UpdatesBridge = {
+  getState: () => Promise<UpdateState>
+  check: () => Promise<UpdateState>
+  install: () => Promise<boolean>
+  onChange: (listener: (state: UpdateState) => void) => () => void
+}
+
 /** Injected by the Electron preload script; absent on web and Android. */
-type ShellBridge = { platform?: string; defaultApiBase?: string }
+type ShellBridge = { platform?: string; defaultApiBase?: string; updates?: UpdatesBridge }
 declare global {
   interface Window {
     quicklaunch?: ShellBridge
   }
+}
+
+/** The updater, or undefined when this is not the desktop shell. */
+export function updateBridge(): UpdatesBridge | undefined {
+  if (typeof window === 'undefined') return undefined
+  return window.quicklaunch?.updates
 }
 
 function compiledBase(): string {

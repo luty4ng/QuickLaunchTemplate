@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { ApiError, api, getApiBase, setApiBase, type Todo, type User } from './api'
 import { AuthPanel } from './components/AuthPanel'
 import { TodoList } from './components/TodoList'
+import { UpdateBanner } from './components/UpdateBanner'
 
 type Health = { state: 'checking' | 'ok' | 'down'; version?: string }
 
@@ -134,6 +135,8 @@ export function App() {
       </header>
 
       {error && <p className="error">{error}</p>}
+
+      <UpdateBanner />
 
       {booting ? (
         <div className="card empty">Loading...</div>

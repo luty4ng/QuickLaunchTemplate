@@ -251,3 +251,28 @@ button:disabled {
   color: var(--text);
   border-color: var(--accent);
 }
+
+/* Update banner: desktop shell only, so it reads as a system notice rather than
+   as part of the todo list. */
+.update {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--accent);
+  background: var(--accent-soft);
+  font-size: 14px;
+}
+
+.update-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.update button {
+  flex: none;
+  padding: 6px 12px;
+  font-size: 14px;
+}

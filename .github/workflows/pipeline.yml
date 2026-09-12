@@ -10,6 +10,15 @@ on:
     tags: ['v*']
   pull_request:
   workflow_dispatch:
+    inputs:
+      version:
+        description: >-
+          Desktop version to stamp. Defaults to 1.0.<run number>, which is always
+          higher than the previous build, so installed clients update. Pass a
+          LOWER version (e.g. 0.0.1) to package a build that the published
+          release is newer than - that is how the update path is tested.
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -28,7 +37,32 @@ env:
 
 jobs:
   # ---------------------------------------------------------------------
-  # 0. Change detection, so a docs-only commit does not rebuild 3 clients.
+  # 0a. The desktop version for this build.
+  #
+  #      It has to be higher than the last release or electron-updater will
+  #      never offer the update to installed clients - and it must be
+  #      overridable, because testing the update path needs a version that is
+  #      deliberately LOWER than the published one.
+  # ---------------------------------------------------------------------
+  versioning:
+    name: versioning
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.pick.outputs.version }}
+    steps:
+      - id: pick
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          version="${INPUT_VERSION:-1.0.${{ github.run_number }}}"
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "not a semver version: $version"; exit 1
+          fi
+          echo "desktop version for this build: $version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  # ---------------------------------------------------------------------
+  # 0b. Change detection, so a docs-only commit does not rebuild 3 clients.
   # ---------------------------------------------------------------------
   changes:
     name: changes
@@ -393,11 +427,12 @@ jobs:
   desktop:
     name: desktop / package (${{ matrix.target }})
     runs-on: ${{ matrix.runner }}
-    needs: [changes, verify-web]
+    needs: [changes, verify-web, versioning]
     if: |
       always()
       && needs.verify-web.result != 'failure'
       && needs.verify-web.result != 'cancelled'
+      && needs.versioning.result == 'success'
       && github.event_name != 'pull_request'
 
     strategy:
@@ -427,6 +462,17 @@ jobs:
       - name: install toolchains
         working-directory: desktop
         run: npm ci --no-audit --no-fund
+
+      - name: unit tests (update version comparison)
+        working-directory: desktop
+        run: npm test
+
+      # The version decides whether installed clients ever see this update:
+      # electron-updater only offers a version strictly higher than the running
+      # one, so "1.0.0" for every build would silently never update anyone.
+      - name: stamp the build version
+        working-directory: desktop
+        run: npm run stamp -- ${{ needs.versioning.outputs.version }}
 
       # The desktop shell ships the web bundle as a resource. Reuse the web
       # job's artifact when it exists, but do not depend on it: that job is
@@ -488,8 +534,19 @@ jobs:
             desktop/release/*.zip
             desktop/release/*.AppImage
             desktop/release/*.deb
+            # latest.yml is the update feed electron-updater reads; blockmap is
+            # what lets it download only the changed bytes.
+            desktop/release/latest.yml
+            desktop/release/*.blockmap
           if-no-files-found: error
           retention-days: 7
+
+      - name: show what the release will contain
+        working-directory: desktop
+        run: |
+          ls -lh release || true
+          echo "--- latest.yml (the update feed clients read) ---"
+          cat release/latest.yml || echo "MISSING latest.yml - installed clients could never update"
 
   # Packaging a desktop app is not evidence that it runs. This job installs the
   # artifact on a real Windows machine, boots it headlessly, and lets it call the
@@ -552,6 +609,9 @@ jobs:
           # Surfaces renderer console output (CORS, CSP, load failures) in the
           # job log; without it a "blank window" is undiagnosable from CI.
           ELECTRON_ENABLE_LOGGING: '1'
+          # Check the real update feed but do not pull a 110 MB installer: this
+          # step proves detection, the release step proves the feed is published.
+          QL_UPDATE_AUTODOWNLOAD: 'false'
         run: |
           # Fail early and clearly if the stub is gone, instead of reporting a
           # mysterious network error from inside the app.
@@ -695,7 +755,7 @@ jobs:
   release:
     name: release / publish build
     runs-on: ubuntu-latest
-    needs: [docker, deploy, desktop, desktop-self-test, android]
+    needs: [versioning, docker, deploy, desktop, desktop-self-test, android]
     if: |
       always()
       && !cancelled()
@@ -719,7 +779,7 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           name: desktop-linux
-          path: dist/desktop
+          path: dist/linux
 
       - uses: actions/download-artifact@v8
         with:
@@ -739,22 +799,43 @@ jobs:
           fi
           ls -lhR .
 
+      # electron-updater reads latest.yml out of the newest release. Without it
+      # in the release, every installed client silently stops seeing updates.
+      - name: check the update feed is part of this release
+        run: |
+          set -euo pipefail
+          if [ ! -f dist/desktop/latest.yml ]; then
+            echo "::error::latest.yml is missing - installed desktop clients would never update"
+            exit 1
+          fi
+          echo "latest.yml:"; cat dist/desktop/latest.yml
+          grep -q "version: ${{ needs.versioning.outputs.version }}" dist/desktop/latest.yml \
+            || { echo "::error::latest.yml does not advertise version ${{ needs.versioning.outputs.version }}"; exit 1; }
+
       - uses: softprops/action-gh-release@v3
         with:
-          tag_name: build-${{ github.run_number }}
-          name: QuickLaunch build ${{ github.run_number }} (${{ github.sha }})
+          tag_name: v${{ needs.versioning.outputs.version }}
+          name: QuickLaunch ${{ needs.versioning.outputs.version }}
           body: |
-            Automated build from `${{ github.sha }}`.
+            Desktop build **${{ needs.versioning.outputs.version }}** from `${{ github.sha }}`.
+
+            Installed Windows clients update themselves: they read `latest.yml` from this
+            release, download in the background and install on one click.
 
             | target | artifact |
             |---|---|
-            | web | served by the container image `${{ env.IMAGE }}:sha-${{ github.sha }}` |
-            | desktop (Windows) | `QuickLaunch Setup *.exe` installer, `*.exe` portable |
+            | desktop (Windows) | `QuickLaunch-Setup-${{ needs.versioning.outputs.version }}-x64.exe` installer, `QuickLaunch-${{ needs.versioning.outputs.version }}-win.zip` unpacked |
+            | desktop (update feed) | `latest.yml`, `*.blockmap` - what electron-updater downloads |
             | desktop (Linux) | `*.AppImage`, `*.deb` |
             | android | `app-debug.apk` |
+            | web | served by `${{ env.IMAGE }}:sha-${{ github.sha }}` |
             | web (static) | `web-${{ github.sha }}.zip` |
 
-            The image for this build: `${{ env.IMAGE }}:sha-${{ github.sha }}`
-            (also `:latest` when this ran on the default branch).
-          files: dist/**/*
+            A client only updates to a version **higher** than the one it runs, so this
+            release must keep its version: retagging or lowering it stops updates.
+          files: |
+            dist/desktop/*
+            dist/linux/*
+            dist/android/*
+            dist/*.zip
           fail_on_unmatched_files: false
