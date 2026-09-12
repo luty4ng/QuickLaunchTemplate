@@ -569,11 +569,16 @@ jobs:
 
   # Packaging a desktop app is not evidence that it runs. This job installs the
   # artifact on a real Windows machine, boots it headlessly, and lets it call the
-  # API from inside the renderer.
+  # API from inside the renderer and read a real published update feed.
+  #
+  # It runs after `release` on purpose: the update path can only be tested once
+  # the feed is actually published. The gates that must stop a bad build - lint,
+  # unit, integration, web, docker, deploy/smoke - all run before `release`, so
+  # this ordering does not weaken them.
   desktop-self-test:
     name: desktop / self-test the packaged app (windows)
     runs-on: windows-latest
-    needs: desktop
+    needs: [versioning, desktop, release]
 
     steps:
       - uses: actions/checkout@v7
@@ -586,6 +591,37 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
+
+      # Read the feed from the newest release that is NOT the one this run is
+      # about to publish. Without that exclusion the build would find its own
+      # release - which at this point in the pipeline is not uploaded yet - and
+      # report a 404 that says nothing about the update path.
+      - name: resolve the update feed to test against
+        id: feed
+        shell: bash
+        run: |
+          set -euo pipefail
+          exclude="v${{ needs.versioning.outputs.version }}"
+          echo "ignoring release $exclude (that is this build)"
+          url="$(curl -fsSL -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases?per_page=20" \
+            | python -c "
+          import json, sys
+          releases = json.load(sys.stdin)
+          exclude = sys.argv[1]
+          for release in releases:            # newest first
+              if release['tag_name'] == exclude:
+                  continue
+              if any(a['name'] == 'latest.yml' for a in release.get('assets', [])):
+                  print(release['assets'][0]['browser_download_url'].rsplit('/', 1)[0])
+                  break
+          " "$exclude")"
+          if [ -z "$url" ]; then
+            echo "no earlier release publishes latest.yml yet; the update path cannot be tested"
+            url=""
+          fi
+          echo "feed=$url" >> "$GITHUB_OUTPUT"
+          echo "testing update feed: ${url:-(none)}"
 
       - name: unpack the built app
         shell: pwsh
@@ -628,9 +664,11 @@ jobs:
           # Surfaces renderer console output (CORS, CSP, load failures) in the
           # job log; without it a "blank window" is undiagnosable from CI.
           ELECTRON_ENABLE_LOGGING: '1'
-          # Check the real update feed but do not pull a 110 MB installer: this
-          # step proves detection, the release step proves the feed is published.
+          # Point the updater at a real published feed and read it, but do not
+          # pull a 110 MB installer: this step proves the client can read an
+          # update feed, not that it downloads one.
           QL_UPDATE_AUTODOWNLOAD: 'false'
+          QL_UPDATE_FEED_URL: ${{ steps.feed.outputs.feed }}
         run: |
           # Fail early and clearly if the stub is gone, instead of reporting a
           # mysterious network error from inside the app.
@@ -774,7 +812,7 @@ jobs:
   release:
     name: release / publish build
     runs-on: ubuntu-latest
-    needs: [versioning, docker, deploy, desktop, desktop-self-test, android]
+    needs: [versioning, docker, deploy, desktop, android]
     if: |
       always()
       && !cancelled()
