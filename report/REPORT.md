@@ -315,24 +315,39 @@ desktop-self-test 30s、release 26s。
 
 ## 9. 已知限制（诚实清单）
 
-1. **本机无法验证安卓构建**：本机既无 Android SDK，Gradle 下载也被网络环境阻断（Java 连
-   `services.gradle.org` 超时，而 Python/git 可达——是本地 Java 出网问题，不是仓库问题）。
-   安卓端的证据来自 CI 的实际构建 + APK 校验。
-2. **本机无法验证 Docker**：本机没有 Docker/Postgres，镜像构建、起栈、探活、迁移全部在 CI 上验证。
-3. **APK 是 debug 签名**：可直接安装，但不适合上架。要做 release 签名只需在 `android/app/build.gradle`
-   加 signingConfig 并把 keystore 放进 secrets——刻意没做，因为那会给 Demo 引入真实的密钥管理负担。
-4. **桌面端未做代码签名**：Windows 会弹 SmartScreen 提示。签名需要付费证书，Demo 不做。
-5. **未做自动回滚**：这是刻意的。自动回滚会掩盖问题；`sha-` tag 是人工回滚锚点，
-   而且管线每次部署都演练一遍回滚。
-6. **单架构镜像**：只出 amd64（arm64 需要模拟，会显著拖慢反馈速度）。
-7. **变更检测没有覆盖 docker job**：只改文档时 `verify-backend` / `verify-web` 会跳过，
-   但 `docker` 仍会构建并推一个内容完全相同的新 `sha-` tag（code job 全跳过时没有可依赖的
-   「有没有变」信号）。约 46 s 的浪费，换成「镜像 tag 必须指向真正变更的提交」会引入
-   更绕的逻辑，Demo 阶段选择保留这个明显的浪费（见 run #34655959285）。
-8. **`report/` 与 `scripts/gh*.py` 里的辅助脚本**：`gh.py` / `gh_logs.py` / `gh_push.py` 是我用来驱动
-   GitHub API 的工具（本机没有 `gh` CLI，PowerShell 的 HTTPS 又被本地 schannel 阻断）。
-   它们只操作本仓库，不碰其他项目。留在仓库里是因为它们记录了「在没有 gh CLI 的环境里怎么驱动管线」，
-   但严格说不是交付物的一部分。
+1. **「deploy」不是把服务部署到服务器上，而是制品验证。**
+   它在 GitHub runner 上真起一套 Postgres 16 + 迁移 + 应用，探活、跑 17 项冒烟、演练一次回滚，
+   **然后 `down -v` 全部销毁**。没有 VPS、没有域名、没有 TLS、没有持久化数据。
+   这是 DESIGN.md 里 A 段的设计意图（「不依赖任何外部服务器」），也正是「GitHub 可以替代部署」这句话
+   成立的部分：GitHub 能替代**制品分发**（Releases / GHCR / Pages）和**部署前的真实验证**，
+   但替代不了**长期运行的 API 进程**——runner 是一次性的，job 结束即销毁。
+   要让人打开 App 就能连上后端，仍需一个常驻容器平台或一台服务器（B 段，模板已留）。
+2. **安卓端只到「构建正确」，没有「验证可用」。**
+   CI 做的全部是：Gradle 构建成功、包名 `dev.quicklaunch.app` 在二进制 manifest 里、
+   `assets/public/index.html` 在 APK 里。**从未安装到设备或模拟器、从未启动、从未发出一次真实请求。**
+   仓库变量 `QL_API_BASE` 未设置，所以 APK 里没有编译进后端地址，装上后打开是「API down」，
+   需要在界面里手填 Server 地址。要升级成「验证可用」，得在 CI 里加一个 emulator 装上 APK 跑真实请求。
+3. **桌面端只有 Windows 产物被真正运行过。** Linux 的 AppImage / deb 只构建，从未执行。
+   你的场景只服务 Windows 客户，所以这不影响交付。
+4. **桌面端自动更新的「安装」环节无法在 CI 里验证。**
+   已验证：应用能读真实发布 feed、能正确判断有无更新、能定位安装包并校验哈希（见 §11）。
+   未验证：`quitAndInstall()` 真正拉起 NSIS 安装器并重启——CI 上装一遍再重启会产生副作用，
+   且未签名时还会弹 SmartScreen。**这一环需要你在真机上点一次确认。**
+5. **没有做依赖/安全扫描**：没有 `pip-audit`、`npm audit`、CodeQL、Dependabot。
+6. **签名相关**：APK 是 debug 签名；Windows/Linux 桌面未做代码签名。
+   未签名不影响自动更新功能，但安装与更新时会弹一次 SmartScreen 警告。
+7. **自动回滚仍然没有**（刻意）：自动回滚会掩盖问题，`sha-` tag 是人工回滚锚点，管线每次部署演练一遍。
+8. **变更检测没有覆盖 docker job**：只改文档时 `verify-backend` / `verify-web` 会跳过，
+   但 `docker` 仍会构建并推一个内容相同的新 `sha-` tag。`deploy` 现在会照样冒烟这个镜像
+   （所以不会再有「进了仓库却没验证」的 tag），但这次构建本身是浪费的。
+   彻底修掉需要「镜像 tag 必须指向真正变更的提交」，逻辑会绕很多。
+9. **每次默认分支构建都会新建一个 Release**，版本号随运行号递增（`v1.0.<run>`）。
+   这是让已安装客户端能持续更新的代价——`latest.yml` 必须出现在**最新**的 release 里。
+   仓库会缓慢积累历史版本；要控制的话加一个清理旧 release 的步骤即可。
+10. **`report/` 与 `scripts/gh*.py` 里的辅助脚本**：`gh.py` / `gh_logs.py` / `gh_push.py` 是我用来驱动
+    GitHub API 的工具（本机没有 `gh` CLI，PowerShell 的 HTTPS 又被本地 schannel 阻断）。
+    它们只操作本仓库，不碰其他项目。留在仓库里是因为它们记录了「在没有 gh CLI 的环境里怎么驱动管线」，
+    但严格说不是交付物的一部分。
 
 ---
 
@@ -362,5 +377,43 @@ cd backend && DATABASE_URL=sqlite+aiosqlite:///./data/dev.db \
 python scripts/smoke.py --base-url http://127.0.0.1:8000
 ```
 
-> 交付状态：**完成**。最后一次提交为 `96afd35`，main 分支干净（无未提交改动、
-> 无遗留分支、无开启的 PR），全部实验分支已删除，未对任何其他仓库发起写操作。
+> 交付状态：**完成**。最后一次提交为 `a6f8206`，main 分支干净（无未提交改动、
+> 无遗留分支、无开启的 PR），全部实验分支与测试用的 draft release 已删除，
+> 未对任何其他仓库发起写操作。
+
+---
+
+## 11. 桌面端自动更新（Windows）
+
+**能做什么**：已安装的 Windows 客户端启动时会静默检查更新，发现新版本就在后台下载，
+界面出现一个横条和**一个按钮**——点它即安装并重启到新版本。这就是「用户只需在客户端里一键拉取最新版」。
+
+**怎么做到的**（`electron-updater` + 仓库自己的 GitHub Releases 作为更新源）：
+
+| 环节 | 实现 |
+|---|---|
+| 更新源 | Release 里的 `latest.yml`（electron-builder 生成，含版本号、安装包名、sha512、大小） |
+| 检查 | 应用启动时静默检查；界面「Server」旁也有「Check for updates」按钮 |
+| 下载 | 后台自动下载，进度通过 IPC 推到界面 |
+| 安装 | `quitAndInstall()`，界面上的「Restart and update」按钮触发 |
+| 版本比较 | `desktop/lib/version.js`，6 个 `node:test` 用例（`1.0.10 > 1.0.9`、预发布低于正式版、无法解析一律回答「无更新」） |
+| 版本递增 | `versioning` job 每次构建盖 `1.0.<run number>`；**版本不递增客户端就永远收不到更新** |
+
+**实测证据**：
+
+| 场景 | 应用版本 | feed 提供 | 结论 |
+|---|---|---|---|
+| 本地受控 feed | 1.0.99 | 9.9.9 | `update-available`, comparison=1 |
+| 本地受控 feed | 1.0.99 | 1.0.1 | `up-to-date`, comparison=-1 |
+| CI，真实发布 feed | 0.0.1 | 1.0.33（已发布） | `update-available`, comparison=1 |
+| CI，真实发布 feed | 1.0.34 | 1.0.34（自己） | `up-to-date`, comparison=0 |
+
+最后一行对应 run [#34674755069](https://github.com/luty4ng/QuickLaunchTemplate/actions/runs/34674755069) 的
+`desktop-self-test`；第三行是专门为验证「有更新」路径而触发的
+[#34675833510](https://github.com/luty4ng/QuickLaunchTemplate/actions/runs/34675833510)
+（用 `workflow_dispatch` 指定一个比线上低的版本 + draft release，跑完即删）。
+
+**唯一没有实测的一环**：`quitAndInstall()` 真正拉起安装器那一下（原因见 §9 第 4 条）。
+你在真机上装一次 `QuickLaunch-Setup-1.0.33-x64.exe`，等有新构建时点一下按钮即可确认。
+
+**注意**：未做代码签名，所以安装和更新时会弹一次 SmartScreen 警告；更新功能本身不受影响。

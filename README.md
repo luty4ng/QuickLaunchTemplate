@@ -46,11 +46,38 @@ every job runs for real, and the acceptance evidence is the run history.
 |---|---|---|
 | Web + API | `ghcr.io/luty4ng/quicklaunchtemplate:sha-<commit>` (one image, both) | `docker` job |
 | Web (static) | `web-<sha>.zip` | `release` job |
-| Desktop | `QuickLaunch-Setup-*.exe`, `QuickLaunch-Portable-*.exe`, `*.AppImage`, `*.deb` | `desktop` job |
+| Desktop | `QuickLaunch-Setup-<version>-x64.exe`, `QuickLaunch-<version>-win.zip`, `*.AppImage`, `*.deb` | `desktop` job |
+| Desktop updates | `latest.yml` + `*.blockmap` — the feed installed clients read | `desktop` job |
 | Android | `app-debug.apk` (installable, debug-signed) | `android` job |
 
-Every default-branch build lands on the repository's **Releases** page, tagged
-`build-<run number>`.
+Every default-branch build publishes a release tagged **`v<version>`**, versioned
+from the run number (`1.0.<run number>`). The version has to keep going up: the
+desktop client only accepts an update to a version **higher** than the one it is
+running.
+
+## Desktop auto-update
+
+An installed Windows client checks the release feed on launch, downloads the new
+installer in the background and installs it with one click ("Restart and
+update"). It reads `latest.yml` from the newest release; electron-builder writes
+that file and the `release` job publishes it.
+
+The update path is tested rather than assumed: `desktop-self-test` boots the
+packaged app on a Windows runner and has it read a **real published feed** and
+report the decision it reaches. To exercise the "update available" branch on
+purpose, dispatch with a lower version than what is published:
+
+```
+gh workflow run pipeline --ref main -f version=0.0.1 -f draft=true
+```
+
+That packages a client older than the published release (as a draft, so nothing
+appears on the downloads page), and the self-test must then report
+`update-available`.
+
+Installing the update is the one step CI cannot rehearse — it would install and
+restart software on the runner — so it is worth clicking once on a real machine.
+The build is unsigned, so Windows shows a SmartScreen prompt.
 
 ## Why one image for the web
 
