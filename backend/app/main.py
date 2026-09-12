@@ -19,6 +19,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app import __version__
+from app.billing import router as billing
 from app.config import REPO_ROOT, get_settings
 from app.deps import install_error_handler
 from app.routers import auth, health, todos
@@ -80,6 +81,7 @@ def create_app() -> FastAPI:
     app.include_router(health.router)
     app.include_router(auth.router, prefix="/api")
     app.include_router(todos.router, prefix="/api")
+    app.include_router(billing.router, prefix="/api")
     _mount_web_client(app, settings.web_dist)
     return app
 

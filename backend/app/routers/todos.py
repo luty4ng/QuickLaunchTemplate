@@ -5,6 +5,10 @@ Isolation rule, enforced on every statement below: the query itself carries
 because that pattern is one forgotten `if` away from a data leak. A row that
 belongs to somebody else is indistinguishable from a row that does not exist:
 both answer 404.
+
+Quota rule, on the create path only: the plan decides how many todos a user may
+have. Reads, edits and deletes are never blocked - being over the limit (after a
+downgrade, say) must not trap someone's existing data.
 """
 
 from __future__ import annotations
@@ -12,6 +16,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Response, status
 from sqlalchemy import delete, select, update
 
+from app.billing.router import quota_for, used_todos
 from app.db.base import utcnow
 from app.db.models import Todo
 from app.deps import CurrentUser, SessionDep, api_error
@@ -30,6 +35,17 @@ async def list_todos(user: CurrentUser, session: SessionDep) -> list[Todo]:
 
 @router.post("", response_model=TodoOut, status_code=status.HTTP_201_CREATED)
 async def create_todo(payload: TodoCreate, user: CurrentUser, session: SessionDep) -> Todo:
+    used = await used_todos(session, user.id)
+    quota = quota_for(user.plan, used)
+    if not quota.can_create:
+        # 402 rather than 403: this is a "pay to continue" state, and the UI uses
+        # the code to decide between an upgrade prompt and an error message.
+        raise api_error(
+            "quota_exceeded",
+            f"The {quota.plan} plan allows {quota.limit} todos. Upgrade to add more.",
+            status.HTTP_402_PAYMENT_REQUIRED,
+        )
+
     # The schema already trimmed the title; store exactly what was validated.
     todo = Todo(user_id=user.id, title=payload.title)
     session.add(todo)

@@ -22,6 +22,7 @@ import json
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 
@@ -51,9 +52,11 @@ class Session:
         payload: dict | None = None,
         *,
         timeout: int = TIMEOUT,
+        base_override: str | None = None,
     ) -> tuple[int, object, float]:
         data = json.dumps(payload).encode() if payload is not None else None
-        request = urllib.request.Request(f"{self.base}{path}", data=data, method=method)
+        origin = base_override.rstrip("/") if base_override else self.base
+        request = urllib.request.Request(f"{origin}{path}", data=data, method=method)
         request.add_header("Accept", "application/json")
         if data:
             request.add_header("Content-Type", "application/json")
@@ -238,6 +241,118 @@ def check_login(base_url: str, email: str | None) -> None:
     record("wrong password is rejected", status == 401, f"status={status}")
 
 
+def check_billing(base_url: str) -> None:
+    """The payment path, end to end, against the running deployment.
+
+    Only exercises the paying half when the deployment is wired to a fake
+    provider (identified by the checkout url pointing at it). With real Stripe
+    that would need credentials and a human with a card, so it records what it
+    can and stops rather than failing.
+
+    What it proves when it does run: a free account is capped at its limit,
+    checkout returns a provider url, a **signed** webhook lifts the cap, and
+    cancelling drops the plan without touching the user's existing todos.
+    """
+    suffix = uuid.uuid4().hex[:10]
+    user = Session(base_url)
+    user.request(
+        "POST",
+        "/api/auth/register",
+        {"email": f"billing+{suffix}@example.com", "password": "billing-password"},
+    )
+
+    status, me, _ = user.request("GET", "/api/billing/me")
+    if status != 200 or not isinstance(me, dict):
+        record("billing: /billing/me answers", False, f"status={status} body={me}")
+        return
+    record(
+        "billing: /billing/me answers",
+        True,
+        f"plan={me.get('plan')} enabled={me.get('billing_enabled')}",
+    )
+
+    if not me.get("billing_enabled"):
+        record("billing: provider is configured", False, "billing_enabled is false")
+        return
+
+    quota = me.get("quota") or {}
+    limit = quota.get("limit")
+    record(
+        "billing: free plan has a finite limit",
+        isinstance(limit, int) and limit > 0,
+        f"limit={limit}",
+    )
+    if not isinstance(limit, int) or limit <= 0:
+        return
+
+    for index in range(limit):
+        created = user.request("POST", "/api/todos", {"title": f"billing smoke {index}"})[0]
+        if created != 201:
+            record("billing: free plan accepts todos up to the limit", False, f"stopped at {index}")
+            return
+    record("billing: free plan accepts todos up to the limit", True, f"{limit} created")
+
+    status, body, _ = user.request("POST", "/api/todos", {"title": "over the limit"})
+    error_code = body.get("error", {}).get("code") if isinstance(body, dict) else None
+    record(
+        "billing: the limit is enforced with 402",
+        status == 402 and error_code == "quota_exceeded",
+        f"status={status} code={error_code}",
+    )
+
+    status, checkout, _ = user.request("POST", "/api/billing/checkout", {"plan": "plus"})
+    if status != 200 or not isinstance(checkout, dict) or not checkout.get("url"):
+        record("billing: checkout returns a provider url", False, f"status={status} body={checkout}")
+        return
+    url = str(checkout["url"])
+    record("billing: checkout returns a provider url", True, url)
+
+    if "fake" not in url:
+        record("billing: payment path", True, "skipped - a real provider is configured")
+        return
+
+    # The fake provider's control endpoint records the payment and delivers the
+    # signed webhooks Stripe would send - which is what actually grants the plan.
+    provider = fake_origin(url)
+    session_id = url.rsplit("/", 1)[-1]
+    status, paid, _ = user.request(
+        "POST", "/__control/pay", {"session_id": session_id}, base_override=provider
+    )
+    if status != 200 or not isinstance(paid, dict):
+        record("billing: provider records the payment", False, f"status={status} body={paid}")
+        return
+    record("billing: provider records the payment", True, f"subscription={paid.get('subscription')}")
+
+    _, me_after, _ = user.request("GET", "/api/billing/me")
+    plan = me_after.get("plan") if isinstance(me_after, dict) else None
+    record("billing: the signed webhook lifted the plan", plan == "plus", f"plan={plan}")
+
+    status, _, _ = user.request("POST", "/api/todos", {"title": "after upgrading"})
+    record("billing: the limit is gone after upgrading", status == 201, f"status={status}")
+
+    subscription = paid.get("subscription")
+    if not subscription:
+        return
+    user.request("POST", "/__control/cancel", {"subscription_id": subscription}, base_override=provider)
+    _, me_cancelled, _ = user.request("GET", "/api/billing/me")
+    plan_after = me_cancelled.get("plan") if isinstance(me_cancelled, dict) else None
+    record("billing: cancelling drops the plan", plan_after == "free", f"plan={plan_after}")
+
+    _, todos, _ = user.request("GET", "/api/todos")
+    kept = len(todos) if isinstance(todos, list) else -1
+    record(
+        "billing: cancelling keeps the user's todos",
+        kept >= limit,
+        f"{kept} todos remain (the free limit is {limit})",
+    )
+
+
+def fake_origin(checkout_url: str) -> str:
+    """The fake provider's origin, taken from the url it handed back."""
+    parsed = urllib.parse.urlsplit(checkout_url)
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -248,6 +363,11 @@ def main() -> int:
         "--skip-spa",
         action="store_true",
         help="API-only mode (no web client in the image)",
+    )
+    parser.add_argument(
+        "--skip-billing",
+        action="store_true",
+        help="skip the payment checks (they only run against a fake provider)",
     )
     args = parser.parse_args()
 
@@ -275,6 +395,8 @@ def main() -> int:
     email = check_journey(args.base_url)
     check_login(args.base_url, email)
     check_isolation(args.base_url)
+    if not args.skip_billing:
+        check_billing(args.base_url)
 
     failed = [name for name, ok, _ in CHECKS if not ok]
     print(f"\n{len(CHECKS) - len(failed)}/{len(CHECKS)} checks passed", flush=True)
