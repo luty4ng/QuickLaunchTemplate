@@ -143,8 +143,12 @@ web/src/
 
 ### 演示数据与文案
 
-* `scripts/smoke.py` 里有示例业务的断言（待办增删改查、配额、计费）——换成你的接口与断言；
-  健康检查、注册登录、租户隔离、更新源那几段是骨架的，可以留着。
+* `scripts/smoke.py`（部署门禁）已经按骨架/业务分成两组：`check_health`、`check_spa`、
+  `check_session`、`check_update_feed` 是骨架的，原样可用；`check_journey`、`check_isolation`、
+  `check_billing` 把 `/api/todos`、`/api/billing` 当载体，换成你自己资源的断言即可——
+  在写完之前先加 `--skip-business` 让门禁只跑骨架那半：
+  `python scripts/smoke.py --base-url https://<域名> --skip-business`
+  这条边界由 `backend/tests/unit/test_smoke.py` 守着（骨架那几个函数里出现业务路径就会红）。
 * `README.md` / `report/*` 是 QuickLaunch 的溯源材料，迁移时重写。
 
 ---
@@ -168,8 +172,6 @@ web/src/
 
 1. **`users` 表上还留着 billing 的列**（`plan`、`stripe_*`）：拆表要先做一次数据迁移，
    单独做。骨架不读这些列，所以删掉 features/ 之后它们只是几列没人碰的字段。
-2. **`smoke.py` 的业务断言没有分离**：目前"骨架检查"与"示例业务检查"在同一个文件里，
-   迁移时要手工挑。
-3. **`bootstrap-server.sh` 尚未在裸机上实测**：只在一台已经准备好的服务器上验证过
+2. **`bootstrap-server.sh` 尚未在裸机上实测**：只在一台已经准备好的服务器上验证过
    幂等性（重复执行为空操作）与 `--check`。
-4. **安卓图标未接入** `branding/`：原生工程由 CI 生成，注入图标要再加一步。
+3. **安卓图标未接入** `branding/`：原生工程由 CI 生成，注入图标要再加一步。

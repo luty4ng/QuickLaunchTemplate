@@ -4,21 +4,32 @@
 Runs against a real, already-running deployment - not against the test client.
 It answers one question: *is the artifact that we just shipped usable?*
 
+The checks come in two groups, and that split **is** the migration boundary
+(see MIGRATION.md §4):
+
+骨架检查 - no business resource is touched, so they survive a migration as they are
     1. GET /api/health must be 200 within the budget (default 1000 ms)
     2. the SPA shell must be served at /
-    3. full user journey: register -> list -> create -> patch -> delete
-    4. cross-user isolation must still hold on the live deployment
-    5. logout must invalidate the session
+    3. the session contract: register -> me -> logout -> login, wrong password 401
+    4. the desktop update feed answers, and range requests are honoured
+
+示例业务检查 - these ride on `/api/todos` and `/api/billing`, so a new project either
+rewrites them against its own resource or skips them with `--skip-business`
+    5. the resource journey: create -> list -> patch -> delete
+    6. cross-user isolation on the live deployment
+    7. the payment path (skipped with `--skip-billing`)
 
 Exit code 0 = shippable, 1 = roll back.
 
     python scripts/smoke.py --base-url http://127.0.0.1:8000
+    python scripts/smoke.py --base-url https://<域名> --skip-business   # 换业务后先只跑骨架
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import time
@@ -29,6 +40,33 @@ import uuid
 
 TIMEOUT = 10
 CHECKS: list[tuple[str, bool, str]] = []
+
+
+class _DirectHandler(urllib.request.ProxyHandler):
+    """A proxy handler that never looks for a bypass.
+
+    urllib's own handler asks `proxy_bypass()` on *every* request, and on Windows
+    that path resolves the local host's FQDN with a reverse DNS lookup. On a
+    network whose reverse zone does not answer, that measured **4.5 s per
+    request** here - which made this script slow and, worse, wrong: the health
+    budget check failed against a server answering in 70 ms. A smoke test talks
+    to a deployment we already know the address of, so the proxy path is skipped;
+    when a proxy is configured through the environment, urllib keeps handling it.
+    """
+
+    def proxy_open(self, req, proxy, type):  # noqa: A002 - urllib's signature
+        return None
+
+
+def _build_opener() -> urllib.request.OpenerDirector:
+    configured = any(
+        os.environ.get(name)
+        for name in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "all_proxy")
+    )
+    return urllib.request.build_opener() if configured else urllib.request.build_opener(_DirectHandler())
+
+
+OPENER = _build_opener()
 
 
 def record(name: str, ok: bool, detail: str = "") -> None:
@@ -66,7 +104,7 @@ class Session:
 
         started = time.perf_counter()
         try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
+            with OPENER.open(request, timeout=timeout) as response:
                 body = response.read()
                 status = response.status
                 set_cookie = response.headers.get("Set-Cookie")
@@ -88,7 +126,7 @@ class Session:
         request = urllib.request.Request(f"{self.base}{path}")
         request.add_header("Accept", "text/html")
         try:
-            with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
+            with OPENER.open(request, timeout=TIMEOUT) as response:
                 return response.status, response.read().decode(errors="replace")
         except urllib.error.HTTPError as error:
             return error.code, error.read().decode(errors="replace")
@@ -126,8 +164,13 @@ def check_spa(base_url: str) -> None:
     )
 
 
-def check_journey(base_url: str) -> str | None:
-    """The whole product in one pass. Returns the user's email on success."""
+def check_session(base_url: str) -> None:
+    """骨架检查：会话契约。
+
+    Touches no business resource, so a migrated project keeps this unchanged:
+    register hands out a cookie, the cookie identifies the user, logout really
+    kills the session, and a wrong password is rejected.
+    """
     email = f"smoke+{uuid.uuid4().hex[:10]}@example.com"
     password = "smoke-test-password"
     user = Session(base_url)
@@ -135,7 +178,42 @@ def check_journey(base_url: str) -> str | None:
     status, body, _ = user.request("POST", "/api/auth/register", {"email": email, "password": password})
     record("register returns 201", status == 201, f"status={status} body={body}")
     if status != 201:
-        return None
+        return
+
+    status, me, _ = user.request("GET", "/api/auth/me")
+    record(
+        "the session cookie identifies the new user",
+        status == 200 and isinstance(me, dict) and me.get("email") == email,
+        f"status={status} body={me}",
+    )
+
+    status, _, _ = user.request("POST", "/api/auth/logout")
+    record("logout returns 204", status == 204, f"status={status}")
+
+    status, body, _ = user.request("GET", "/api/auth/me")
+    record("session is dead after logout", status == 401, f"status={status} body={body}")
+
+    fresh = Session(base_url)
+    status, body, _ = fresh.request("POST", "/api/auth/login", {"email": email, "password": password})
+    record("log in again with the same credentials", status == 200, f"status={status} body={body}")
+
+    status, _, _ = fresh.request("POST", "/api/auth/login", {"email": email, "password": "wrong-password"})
+    record("wrong password is rejected", status == 401, f"status={status}")
+
+
+def check_journey(base_url: str) -> None:
+    """示例业务检查：把 `/api/todos` 当载体的资源全流程。
+
+    迁移时把这个函数换成你自己资源的增删改查（`--skip-business` 可以先跳过它）。
+    """
+    email = f"smoke+{uuid.uuid4().hex[:10]}@example.com"
+    password = "smoke-test-password"
+    user = Session(base_url)
+
+    status, body, _ = user.request("POST", "/api/auth/register", {"email": email, "password": password})
+    if status != 201:
+        record("business journey: registration works", False, f"status={status} body={body}")
+        return
 
     status, body, _ = user.request("GET", "/api/todos")
     record(
@@ -148,7 +226,7 @@ def check_journey(base_url: str) -> str | None:
     ok = status == 201 and isinstance(created, dict) and created.get("title") == "smoke: created"
     record("create todo returns 201", ok, f"status={status} body={created}")
     if not ok or not isinstance(created, dict):
-        return None
+        return
     todo_id = created["id"]
 
     status, listed, _ = user.request("GET", "/api/todos")
@@ -175,17 +253,13 @@ def check_journey(base_url: str) -> str | None:
         f"status={status} body={listed}",
     )
 
-    status, _, _ = user.request("POST", "/api/auth/logout")
-    record("logout returns 204", status == 204, f"status={status}")
-
-    status, body, _ = user.request("GET", "/api/todos")
-    record("session is dead after logout", status == 401, f"status={status} body={body}")
-
-    return email
-
 
 def check_isolation(base_url: str) -> None:
-    """Prove on the live deployment that one user cannot touch another's data."""
+    """示例业务检查：在真实部署上证明一个用户碰不到另一个用户的数据。
+
+    越权是骨架级的安全要求，但"被拥有的资源"来自业务——迁移时把 `/api/todos`
+    换成你自己的资源即可，断言本身不用改。
+    """
     suffix = uuid.uuid4().hex[:10]
     alice = Session(base_url)
     bob = Session(base_url)
@@ -218,28 +292,6 @@ def check_isolation(base_url: str) -> None:
         isinstance(alice_list, list) and len(alice_list) == 1,
         f"body={alice_list}",
     )
-
-
-def check_login(base_url: str, email: str | None) -> None:
-    if not email:
-        record(
-            "log in again with the same credentials",
-            False,
-            "registration failed earlier",
-        )
-        return
-    user = Session(base_url)
-    status, body, _ = user.request(
-        "POST", "/api/auth/login", {"email": email, "password": "smoke-test-password"}
-    )
-    record(
-        "log in with the same credentials",
-        status == 200,
-        f"status={status} body={body}",
-    )
-
-    status, body, _ = user.request("POST", "/api/auth/login", {"email": email, "password": "wrong-password"})
-    record("wrong password is rejected", status == 401, f"status={status}")
 
 
 def check_billing(base_url: str) -> None:
@@ -429,7 +481,10 @@ def check_update_feed(base_url: str) -> None:
     # update silently becomes a full download), 206 means incremental updates can
     # work. A HEAD is deliberately not used: GitHub answers those with a redirect
     # that curl reports rather than follows, which says nothing about the file.
-    code = _curl_code(["-L", "-o", "/dev/null", "-r", "0-0", installer])
+    # `os.devnull` rather than a literal "/dev/null": on Windows that literal is a
+    # path curl cannot write to, and the write error aborts the redirect chain -
+    # which shows up here as a bogus 302 on a two-hop download.
+    code = _curl_code(["-L", "-o", os.devnull, "-r", "0-0", installer])
     record(
         "update feed: the installer it points at is downloadable",
         code in ("200", "206"),
@@ -473,6 +528,13 @@ def main() -> int:
         action="store_true",
         help="skip the payment checks (they only run against a fake provider)",
     )
+    parser.add_argument(
+        "--skip-business",
+        action="store_true",
+        help=(
+            "只跑骨架检查：示例业务检查把 /api/todos 与 /api/billing 当载体，换成你自己的断言之前先用这个开关"
+        ),
+    )
     args = parser.parse_args()
 
     print(f"smoke testing {args.base_url}", flush=True)
@@ -492,16 +554,25 @@ def main() -> int:
                 return 1
             time.sleep(2)
 
+    # --- 骨架检查：不碰任何业务资源，迁移后原样可用 --------------------------
     if not check_health(args.base_url, args.health_budget_ms):
         return 1
     if not args.skip_spa:
         check_spa(args.base_url)
-    email = check_journey(args.base_url)
-    check_login(args.base_url, email)
-    check_isolation(args.base_url)
-    if not args.skip_billing:
-        check_billing(args.base_url)
+    check_session(args.base_url)
     check_update_feed(args.base_url)
+
+    # --- 示例业务检查：用 /api/todos 与 /api/billing 当载体 -------------------
+    if args.skip_business:
+        print(
+            "SKIP  示例业务检查（--skip-business）：换成你自己资源的断言后记得去掉这个开关",
+            flush=True,
+        )
+    else:
+        check_journey(args.base_url)
+        check_isolation(args.base_url)
+        if not args.skip_billing:
+            check_billing(args.base_url)
 
     failed = [name for name, ok, _ in CHECKS if not ok]
     print(f"\n{len(CHECKS) - len(failed)}/{len(CHECKS)} checks passed", flush=True)
