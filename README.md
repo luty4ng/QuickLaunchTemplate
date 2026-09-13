@@ -366,3 +366,5 @@ docker compose up -d --wait
   以及定时发版与迁移新项目的操作方式。
 - `report/PIPELINE-REVIEW.md` —— 配置与发版梳理：一次 Release 里每个文件是干什么的、
   哪些能砍（默认只保留安装包 + `latest.yml` + blockmap）、以及精简的三步方案。
+- `report/PIPELINE-MAP.md` —— 管线地图：13 个 job 分别在哪种触发下跑、哪些默认跳过，
+  以及"如果还想更清爽"的三个可选方案与代价。
