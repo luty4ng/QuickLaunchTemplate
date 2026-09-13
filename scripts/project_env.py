@@ -262,12 +262,19 @@ def cmd_bootstrap(args: argparse.Namespace, values: dict[str, str]) -> int:
         new["MOBILE_APP_ID"] = f"dev.{args.slug}.app"
 
     old, fresh = derived(values), derived(new)
-    # Longest first, so `ghcr.io/o/name` is replaced before the bare `name`.
+    # Longest first, so `ghcr.io/o/name` is replaced before the bare `name`, and
+    # `owner/name` before `name` alone. The ordering is not cosmetic: a rehearsal
+    # of this migration turned `QuickLaunchTemplate` into `LaunchKitTemplate`,
+    # because the *project name* is a prefix of the *repository name* and the
+    # shorter key was applied first. The check at the end caught it - which is
+    # what the check is for - but the map should not need it to be correct.
     replacements = {
         old["APP_DOMAIN"]: fresh["APP_DOMAIN"],
         old["IMAGE_REPO"]: fresh["IMAGE_REPO"],
         old["REPO_SLUG"]: fresh["REPO_SLUG"],
         old["IMAGE_NAME"]: fresh["IMAGE_NAME"],
+        old["REPO_NAME"]: fresh["REPO_NAME"],
+        old["REPO_OWNER"]: fresh["REPO_OWNER"],
         old["DESKTOP_APP_ID"]: fresh["DESKTOP_APP_ID"],
         old["MOBILE_APP_ID"]: fresh["MOBILE_APP_ID"],
         old["PROJECT_NAME"]: fresh["PROJECT_NAME"],
