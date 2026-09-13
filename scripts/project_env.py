@@ -51,6 +51,10 @@ CHECKED_FILES = (
     "desktop/package.json",
     "desktop/app-config.json",
     "mobile/capacitor.config.json",
+    "web/index.html",
+    "web/package.json",
+    "web/package-lock.json",
+    "web/src/App.tsx",
 )
 
 
@@ -220,6 +224,33 @@ def check(values: dict[str, str]) -> list[str]:
             f"mobile/capacitor.config.json: appName is {mobile.get('appName')!r}, "
             f"expected {v['PROJECT_NAME']!r}"
         )
+
+    # The web bundle cannot read project.env, so its brand strings are literals -
+    # the same bargain as the desktop package. These are only *cosmetic* when
+    # stale (wrong name in the tab title and the header), which is exactly why
+    # nobody notices: they are checked so a rename cannot quietly miss them.
+    expected_web_name = f"{v['PROJECT_SLUG']}-web"
+    package = json.loads(read("web/package.json"))
+    if package.get("name") != expected_web_name:
+        problems.append(
+            f"web/package.json: name is {package.get('name')!r}, expected {expected_web_name!r}"
+        )
+    lock = json.loads(read("web/package-lock.json"))
+    if lock.get("name") != expected_web_name:
+        problems.append(
+            f"web/package-lock.json: name is {lock.get('name')!r}, expected {expected_web_name!r} "
+            "(kept in step with package.json so `npm ci` stays consistent)"
+        )
+    require(
+        "web/index.html",
+        f"<title>{v['PROJECT_NAME']}</title>",
+        "the browser tab must show this project's name",
+    )
+    require(
+        "web/src/App.tsx",
+        f"const APP_NAME = '{v['PROJECT_NAME']}'",
+        "the header brand is a literal in the bundle; keep it as one rewritable line",
+    )
 
     return problems
 

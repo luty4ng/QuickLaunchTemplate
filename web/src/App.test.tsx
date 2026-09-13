@@ -2,7 +2,7 @@ import { act, type ReactElement } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { App } from './App'
+import { App, APP_NAME } from './App'
 import { FEATURES } from './features'
 
 /**
@@ -100,6 +100,11 @@ describe('app shell', () => {
     expect(FEATURES.length).toBeGreaterThan(0)
     expect(view.textContent).toContain(USER.email)
     expect(view.textContent).toContain('API ok v9.9.9')
+    // The brand is one rewritable literal, and the accent lives on a span inside
+    // it - a split that a careless rename would silently lose.
+    const brand = view.querySelector('.brand')
+    expect(brand?.textContent).toBe(APP_NAME)
+    expect(brand?.querySelector('span')).not.toBeNull()
     expect([...view.querySelectorAll('[data-feature]')].map((slot) => slot.getAttribute('data-feature'))).toEqual(
       FEATURES.map((feature) => feature.id),
     )

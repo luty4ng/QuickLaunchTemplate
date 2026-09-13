@@ -45,9 +45,14 @@ python scripts/project_env.py show
 ```
 
 `bootstrap` 默认是 dry run，`--write` 才落盘。它同时会替换 release 说明里的产品名、
-`desktop/package.json` 的 `publish.owner/repo`、`mobile/capacitor.config.json` 的包名等
-十余处——**漏改的后果并不均等**：漏 `deploy.sh` 的仓库地址是部署失败（还算好），
-漏 electron-builder 的 `publish.owner` 是桌面端自动更新静默失效。
+`desktop/package.json` 的 `publish.owner/repo`、`mobile/capacitor.config.json` 的包名、
+前端三处品牌字面量（`web/index.html` 的 `<title>`、`web/package.json` + `package-lock.json`
+的 name、`web/src/App.tsx` 的 `APP_NAME`）等十余处——**漏改的后果并不均等**：漏 `deploy.sh`
+的仓库地址是部署失败（还算好），漏 electron-builder 的 `publish.owner` 是桌面端自动更新静默失效，
+漏前端的则是线上还挂着旧名字（不影响运行，所以最容易一直没人发现）。
+
+能替换的文件都列在 `scripts/project_env.py` 的 `CHECKED_FILES` 里（当前 12 个），
+`check` 逐个校验它们与 `project.env` 是否一致——加新文件时记得同时加一条校验。
 
 ---
 
@@ -139,7 +144,7 @@ web/src/
 
 | 步骤 | 验收命令 | 期望 |
 |---|---|---|
-| 改名 | `python scripts/project_env.py check` | `project identity agrees with project.env (8 files checked)` |
+| 改名 | `python scripts/project_env.py check` | `project identity agrees with project.env (12 files checked)` |
 | 后端骨架完好 | `cd backend && pytest tests -q` | 全绿；含 `tests/unit/test_layering.py` |
 | 迁移可逆 | `alembic upgrade head && alembic downgrade base && alembic upgrade head` | 三步都成功 |
 | 前端 | `cd web && npm run lint && npm run typecheck && npm test && npm run build` | 全绿；含 `src/layering.test.ts` 分层守卫与 `src/App.test.tsx` 渲染冒烟 |
@@ -158,7 +163,3 @@ web/src/
 3. **`bootstrap-server.sh` 尚未在裸机上实测**：只在一台已经准备好的服务器上验证过
    幂等性（重复执行为空操作）与 `--check`。
 4. **安卓图标未接入** `branding/`：原生工程由 CI 生成，注入图标要再加一步。
-5. **前端品牌字样还是字面量**：`web/src/App.tsx` 的 `QuickLaunch`、`web/index.html` 的
-   `<title>`、`web/package.json` 的 `name` 都不在 `project_env.py check` 的 8 个文件里，
-   改名时容易漏（后果只是显示名不对，不影响运行）。最省事的补法是把这三个文件纳入
-   `CHECKED_FILES`，或让 Vite 用 `VITE_APP_NAME` 注入。

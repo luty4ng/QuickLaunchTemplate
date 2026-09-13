@@ -12,6 +12,13 @@ import { FEATURES } from './features'
  */
 type Health = { state: 'checking' | 'ok' | 'down'; version?: string }
 
+/**
+ * The display name, as one literal on purpose: a bundle cannot read project.env
+ * at runtime, so `scripts/project_env.py bootstrap --write` rewrites this line
+ * and `check` fails when it drifts from the file (see MIGRATION.md §1).
+ */
+export const APP_NAME = 'QuickLaunch'
+
 export function App() {
   const [user, setUser] = useState<User | null>(null)
   const [booting, setBooting] = useState(true)
@@ -79,7 +86,7 @@ export function App() {
     <div className="app">
       <header className="header">
         <h1 className="brand">
-          Quick<span>Launch</span>
+          <Brand name={APP_NAME} />
         </h1>
         {user && (
           <div className="row">
@@ -127,6 +134,25 @@ export function App() {
         )}
       </footer>
     </div>
+  )
+}
+
+/**
+ * The brand, with the accent colour on the last word (`.brand span` in
+ * styles.css). A one-word name is split on its camel-case boundary, which is how
+ * this template ships it: Quick|Launch.
+ */
+function Brand({ name }: { name: string }) {
+  const spaced = name.includes(' ')
+  const words = (spaced ? name.split(' ') : name.split(/(?=[A-Z])/)).filter(Boolean)
+  const tail = words.pop() ?? name
+
+  return (
+    <>
+      {words.join(spaced ? ' ' : '')}
+      {spaced && words.length > 0 ? ' ' : null}
+      <span>{tail}</span>
+    </>
   )
 }
 
