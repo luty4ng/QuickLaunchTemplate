@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 
-import { updateBridge, type UpdateState } from '../api'
+import { updateBridge, type UpdateState } from '../api/core'
 
 /**
  * Update banner for the desktop build.

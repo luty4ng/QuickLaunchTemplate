@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { updateBridge, type UpdatesBridge } from './api'
+import { updateBridge, type UpdatesBridge } from './core'
 
 describe('update bridge', () => {
   beforeEach(() => localStorage.clear())

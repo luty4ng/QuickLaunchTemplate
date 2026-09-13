@@ -285,6 +285,10 @@ backend/      FastAPI 应用、alembic 迁移、pytest 测试
   migrations/   版本化 schema；`alembic upgrade head` 是流水线里独立的一步
   tests/        单元 + 集成 + 分层守卫（全部离线可跑）
 web/          Vite + React + TypeScript SPA（唯一的前端源码）
+  src/api/      骨架：request 封装、错误映射、会话、更新桥、API 基址
+  src/features/ 示例业务：todos、billing（各自带组件 + 自己的 API 调用）
+                骨架**不许**导入它——只认 features/index.ts 注册表，由
+                src/layering.test.ts（扫源码）与 src/App.test.tsx（真渲染）守着
 desktop/      Electron 外壳 + electron-builder 打包（含自动更新）
 mobile/       Capacitor 配置；android/ 原生工程由 CI 生成，不入库
 deploy/       compose.server.yaml（Traefik 接入）、deploy.sh（服务器侧部署）、
@@ -309,8 +313,9 @@ python scripts/project_env.py bootstrap --repo <owner>/<repo> --domain <域名> 
 bash deploy/bootstrap-server.sh --check
 ```
 
-业务代码集中在 `backend/app/features/`：换项目就是删掉那两个示例功能包、放自己的进去，
-骨架（认证、会话、健康、更新源）不用动。
+业务代码各自集中在一个目录：后端 `backend/app/features/`，前端 `web/src/features/`。
+换项目就是删掉那两个示例功能包、放自己的进去（前端再改注册表一行），
+骨架（认证、会话、健康、更新源、壳层 UI）不用动。
 
 ## 本地运行
 

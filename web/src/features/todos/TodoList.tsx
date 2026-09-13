@@ -1,6 +1,6 @@
 import { useState } from 'react'
 
-import type { Todo } from '../api'
+import type { Todo } from './api'
 
 export function TodoList({
   todos,

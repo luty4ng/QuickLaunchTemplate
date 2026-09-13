@@ -107,10 +107,25 @@ mkdir -p backend/app/features/<你的功能>/
 
 ### 前端
 
-前端分层进行中：目标结构是 `web/src/features/<功能>/`（组件 + 自己的 API 调用）+ 一个注册表，
-骨架（`App.tsx`、认证、健康、更新条、API 基址设置）不认识具体功能。
-当前 `web/src/components/{TodoList,PlanPanel}.tsx` 与 `web/src/api.ts` 里的业务调用就是
-待搬迁的部分——迁移时它们会随 `features/` 一起被替换。
+结构与后端一一对应：
+
+```
+web/src/
+  api/core.ts        骨架：request 封装、错误映射、会话、更新桥、API 基址
+  components/        骨架 UI：AuthPanel（登录）、UpdateBanner（桌面更新条）
+  features/
+    index.ts         注册表——骨架与业务之间唯一的接口（按顺序即面板顺序）
+    types.ts         Feature / FeatureProps 契约（onError、onUnauthorized）
+    bus.ts           跨功能失效通知（业务之间不互相 import）
+    todos/           api.ts + TodoList.tsx + Panel.tsx + index.ts
+    billing/         api.ts + PlanPanel.tsx + Panel.tsx + index.ts
+  App.tsx            壳层：会话、健康徽标、错误行、渲染注册表
+```
+
+换业务的动作只有两步：删掉 `todos/`、`billing/` 两个目录，注册表里换掉那两行
+（新功能只要导出 `FEATURE = { id, Panel }`，面板自己管状态、自己调自己的 `api.ts`）。
+`src/layering.test.ts` 扫描源码，骨架文件或兄弟功能 import 具体功能就会变红；
+`src/App.test.tsx` 真实渲染壳层，断言"注册表里有什么就渲染什么"——两个测试都不认识示例业务。
 
 ### 演示数据与文案
 
@@ -127,7 +142,7 @@ mkdir -p backend/app/features/<你的功能>/
 | 改名 | `python scripts/project_env.py check` | `project identity agrees with project.env (8 files checked)` |
 | 后端骨架完好 | `cd backend && pytest tests -q` | 全绿；含 `tests/unit/test_layering.py` |
 | 迁移可逆 | `alembic upgrade head && alembic downgrade base && alembic upgrade head` | 三步都成功 |
-| 前端 | `cd web && npm run lint && npm run typecheck && npm test && npm run build` | 全绿 |
+| 前端 | `cd web && npm run lint && npm run typecheck && npm test && npm run build` | 全绿；含 `src/layering.test.ts` 分层守卫与 `src/App.test.tsx` 渲染冒烟 |
 | 服务器 | `bash deploy/bootstrap-server.sh --check` | 全部 ✓ |
 | 首次发版 | `git tag -a v0.1.0 -m "first" && git push origin v0.1.0` | 流水线全绿：Release 只有安装包、更新源公网可读且 Range=206、公网冒烟通过 |
 | 更新源 | `curl -s https://<域名>/updates/latest.yml` | `version: <你的版本>` |
@@ -136,11 +151,14 @@ mkdir -p backend/app/features/<你的功能>/
 
 ## 6. 还不完美的地方（诚实清单）
 
-1. **前端分层未完成**（§4）：业务组件与 API 调用仍与骨架同目录，注册表还没建。
-2. **`users` 表上还留着 billing 的列**（`plan`、`stripe_*`）：拆表要先做一次数据迁移，
+1. **`users` 表上还留着 billing 的列**（`plan`、`stripe_*`）：拆表要先做一次数据迁移，
    单独做。骨架不读这些列，所以删掉 features/ 之后它们只是几列没人碰的字段。
-3. **`smoke.py` 的业务断言没有分离**：目前"骨架检查"与"示例业务检查"在同一个文件里，
+2. **`smoke.py` 的业务断言没有分离**：目前"骨架检查"与"示例业务检查"在同一个文件里，
    迁移时要手工挑。
-4. **`bootstrap-server.sh` 尚未在裸机上实测**：只在一台已经准备好的服务器上验证过
+3. **`bootstrap-server.sh` 尚未在裸机上实测**：只在一台已经准备好的服务器上验证过
    幂等性（重复执行为空操作）与 `--check`。
-5. **安卓图标未接入** `branding/`：原生工程由 CI 生成，注入图标要再加一步。
+4. **安卓图标未接入** `branding/`：原生工程由 CI 生成，注入图标要再加一步。
+5. **前端品牌字样还是字面量**：`web/src/App.tsx` 的 `QuickLaunch`、`web/index.html` 的
+   `<title>`、`web/package.json` 的 `name` 都不在 `project_env.py check` 的 8 个文件里，
+   改名时容易漏（后果只是显示名不对，不影响运行）。最省事的补法是把这三个文件纳入
+   `CHECKED_FILES`，或让 Vite 用 `VITE_APP_NAME` 注入。

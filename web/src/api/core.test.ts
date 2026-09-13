@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { ApiError, api, apiUrl, getApiBase, setApiBase } from './api'
+import { ApiError, api, apiUrl, describeError, getApiBase, setApiBase } from './core'
 
 /** A fetch stub whose call arguments stay typed, so assertions can read them. */
 function stubFetch(handler: (url: string, init: RequestInit) => Response | Promise<Response>) {
@@ -48,31 +48,34 @@ describe('request handling', () => {
   })
 
   it('sends cookies with every request', async () => {
-    const calls = stubFetch(() => json([]))
+    const calls = stubFetch(() => json({ id: '1', email: 'a@b.com' }))
 
-    await api.listTodos()
+    await api.me()
 
     expect(calls).toHaveLength(1)
-    expect(calls[0]?.url).toBe('/api/todos')
+    expect(calls[0]?.url).toBe('/api/auth/me')
     expect(calls[0]?.init.credentials).toBe('include')
   })
 
   it('targets the configured base URL when one is set', async () => {
     setApiBase('https://api.example.com/')
-    const calls = stubFetch(() => json([]))
+    const calls = stubFetch(() => json({ id: '1', email: 'a@b.com' }))
 
-    await api.listTodos()
+    await api.me()
 
-    expect(calls[0]?.url).toBe('https://api.example.com/api/todos')
+    expect(calls[0]?.url).toBe('https://api.example.com/api/auth/me')
   })
 
   it('sends JSON bodies for writes', async () => {
-    const calls = stubFetch(() => json({ id: '1', title: 'buy milk', done: false }))
+    const calls = stubFetch(() => json({ id: '1', email: 'a@b.com' }))
 
-    await api.createTodo('buy milk')
+    await api.login('a@b.com', 'sup3rsecret')
 
     expect(calls[0]?.init.method).toBe('POST')
-    expect(calls[0]?.init.body).toBe(JSON.stringify({ title: 'buy milk' }))
+    expect(JSON.parse(String(calls[0]?.init.body))).toEqual({
+      email: 'a@b.com',
+      password: 'sup3rsecret',
+    })
   })
 
   it('maps the API error envelope onto ApiError', async () => {
@@ -89,7 +92,7 @@ describe('request handling', () => {
   it('labels FastAPI validation failures as validation_error', async () => {
     stubFetch(() => json({ detail: [] }, 422))
 
-    const error = (await api.createTodo('x').catch((cause: unknown) => cause)) as ApiError
+    const error = (await api.register('x', 'y').catch((cause: unknown) => cause)) as ApiError
     expect(error).toBeInstanceOf(ApiError)
     expect(error.code).toBe('validation_error')
   })
@@ -106,14 +109,13 @@ describe('request handling', () => {
   it('resolves 204 responses without parsing a body', async () => {
     stubFetch(() => new Response(null, { status: 204 }))
 
-    await expect(api.deleteTodo('abc')).resolves.toBeUndefined()
+    await expect(api.logout()).resolves.toBeUndefined()
   })
 
-  it('url-encodes ids in paths', async () => {
-    const calls = stubFetch(() => json({}))
-
-    await api.deleteTodo('id with spaces/and-slash')
-
-    expect(calls[0]?.url).toBe('/api/todos/id%20with%20spaces%2Fand-slash')
+  it('describes a transport failure without leaking a stack trace', () => {
+    expect(describeError(new ApiError(500, 'http_error', 'The server hit an unexpected error.'))).toBe(
+      'The server hit an unexpected error.',
+    )
+    expect(describeError(new TypeError('Failed to fetch'))).toBe('Could not reach the server.')
   })
 })

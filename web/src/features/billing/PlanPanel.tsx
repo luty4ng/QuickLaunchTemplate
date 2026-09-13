@@ -1,6 +1,7 @@
 import { useState } from 'react'
 
-import { ApiError, api, type BillingMe } from '../api'
+import { describeError } from '../../api/core'
+import { billingApi, type BillingMe } from './api'
 
 /**
  * Plan and quota, plus the upgrade path.
@@ -18,18 +19,14 @@ export function PlanPanel({
   billing,
   onRefresh,
 }: {
-  billing: BillingMe | null
+  billing: BillingMe
   onRefresh: () => Promise<void>
 }) {
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [checking, setChecking] = useState(false)
 
-  if (!billing) return null
-
   const { quota, plan, plans } = billing
-  const describe = (cause: unknown) =>
-    cause instanceof ApiError ? cause.message : 'Could not reach the server.'
 
   const go = async (action: () => Promise<{ url: string }>, label: string) => {
     setBusy(label)
@@ -39,7 +36,7 @@ export function PlanPanel({
       // Handing off to the provider's own page: card details never touch this app.
       window.location.assign(url)
     } catch (cause) {
-      setError(describe(cause))
+      setError(describeError(cause))
       setBusy(null)
     }
   }
@@ -48,10 +45,10 @@ export function PlanPanel({
     setChecking(true)
     setError(null)
     try {
-      await api.syncBilling()
+      await billingApi.sync()
       await onRefresh()
     } catch (cause) {
-      setError(describe(cause))
+      setError(describeError(cause))
     } finally {
       setChecking(false)
     }
@@ -74,7 +71,7 @@ export function PlanPanel({
           <button
             className="secondary"
             disabled={busy !== null}
-            onClick={() => void go(() => api.openPortal(), 'portal')}
+            onClick={() => void go(() => billingApi.portal(), 'portal')}
           >
             {busy === 'portal' ? '打开中…' : '管理订阅'}
           </button>
@@ -97,7 +94,7 @@ export function PlanPanel({
               <button
                 key={candidate.id}
                 disabled={busy !== null}
-                onClick={() => void go(() => api.startCheckout(candidate.id), candidate.id)}
+                onClick={() => void go(() => billingApi.checkout(candidate.id), candidate.id)}
               >
                 {busy === candidate.id
                   ? '跳转中…'

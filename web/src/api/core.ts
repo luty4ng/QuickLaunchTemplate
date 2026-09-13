@@ -1,5 +1,6 @@
 /**
- * Typed API client.
+ * Skeleton API client. No business endpoints live here - those sit next to the
+ * feature that owns them (`src/features/<name>/api.ts`) and call `request`.
  *
  * Three targeting rules live here and nowhere else:
  *  1. Same-origin by default (`VITE_API_BASE` empty). The web build is served by
@@ -9,14 +10,6 @@
  *     need a rebuild to talk to a different server.
  *  3. The Android build bakes in its own origin; the backend allows it via CORS.
  */
-
-export type Todo = {
-  id: string
-  title: string
-  done: boolean
-  created_at: string
-  updated_at: string
-}
 
 export type User = { id: string; email: string }
 
@@ -32,6 +25,11 @@ export class ApiError extends Error {
     this.status = status
     this.code = code
   }
+}
+
+/** The one message every caller shows when a failure is not an ApiError. */
+export function describeError(cause: unknown): string {
+  return cause instanceof ApiError ? cause.message : 'Could not reach the server.'
 }
 
 const RUNTIME_OVERRIDE_KEY = 'quicklaunch.apiBase'
@@ -143,7 +141,8 @@ async function toApiError(response: Response): Promise<ApiError> {
   return new ApiError(response.status, code, message)
 }
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+/** The single fetch wrapper every feature endpoint goes through. */
+export async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(apiUrl(path), {
     ...init,
     // Session lives in an httpOnly cookie, so every call must carry it.
@@ -159,34 +158,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   return (await response.json()) as T
 }
 
-export type Quota = {
-  plan: string
-  /** null means unlimited. */
-  limit: number | null
-  used: number
-  remaining: number | null
-  can_create: boolean
-}
-
-export type Plan = {
-  id: 'plus' | 'pro'
-  name: string
-  limit: number | null
-  price_id: string
-  available: boolean
-}
-
-export type BillingMe = {
-  plan: string
-  quota: Quota
-  status: string | null
-  current_period_end: string | null
-  cancel_at_period_end: boolean
-  has_customer: boolean
-  plans: Plan[]
-  billing_enabled: boolean
-}
-
+/** Health and session - the endpoints the app shell itself depends on. */
 export const api = {
   health: () => request<{ status: string; database: string; version: string }>('/api/health'),
 
@@ -196,28 +168,4 @@ export const api = {
   login: (email: string, password: string) =>
     request<User>('/api/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) }),
   logout: () => request<void>('/api/auth/logout', { method: 'POST' }),
-
-  listTodos: () => request<Todo[]>('/api/todos'),
-  createTodo: (title: string) =>
-    request<Todo>('/api/todos', { method: 'POST', body: JSON.stringify({ title }) }),
-  updateTodo: (id: string, patch: { title?: string; done?: boolean }) =>
-    request<Todo>(`/api/todos/${encodeURIComponent(id)}`, {
-      method: 'PATCH',
-      body: JSON.stringify(patch),
-    }),
-  deleteTodo: (id: string) => request<void>(`/api/todos/${encodeURIComponent(id)}`, { method: 'DELETE' }),
-
-  billingMe: () => request<BillingMe>('/api/billing/me'),
-  /** The plan name, not a price: what it costs is decided by the server. */
-  startCheckout: (plan: Plan['id']) =>
-    request<{ url: string }>('/api/billing/checkout', {
-      method: 'POST',
-      body: JSON.stringify({ plan }),
-    }),
-  openPortal: () => request<{ url: string }>('/api/billing/portal', { method: 'POST' }),
-  /** Reconcile with the provider, for when a webhook never arrived. */
-  syncBilling: () =>
-    request<{ plan: string; status: string | null; changed: boolean }>('/api/billing/sync', {
-      method: 'POST',
-    }),
 }

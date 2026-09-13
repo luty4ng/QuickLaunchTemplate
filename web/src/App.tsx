@@ -1,57 +1,24 @@
 import { useCallback, useEffect, useState } from 'react'
 
-import {
-  ApiError,
-  api,
-  getApiBase,
-  setApiBase,
-  type BillingMe,
-  type Todo,
-  type User,
-} from './api'
+import { api, describeError, getApiBase, setApiBase, type User } from './api/core'
 import { AuthPanel } from './components/AuthPanel'
-import { PlanPanel } from './components/PlanPanel'
-import { TodoList } from './components/TodoList'
 import { UpdateBanner } from './components/UpdateBanner'
+import { FEATURES } from './features'
 
+/**
+ * The app shell. It owns the session, the health badge and the error line, and
+ * knows nothing about what the signed-in panels do: it renders the feature
+ * registry and hands each panel a way to report back.
+ */
 type Health = { state: 'checking' | 'ok' | 'down'; version?: string }
 
 export function App() {
   const [user, setUser] = useState<User | null>(null)
   const [booting, setBooting] = useState(true)
   const [health, setHealth] = useState<Health>({ state: 'checking' })
-  const [todos, setTodos] = useState<Todo[]>([])
-  const [billing, setBilling] = useState<BillingMe | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [apiBase, setApiBaseState] = useState(getApiBase())
   const [showSettings, setShowSettings] = useState(false)
-
-  const describe = (cause: unknown): string =>
-    cause instanceof ApiError ? cause.message : 'Could not reach the server.'
-
-  /** Loads todos for the signed-in user; a 401 simply means "signed out". */
-  const refreshTodos = useCallback(async () => {
-    try {
-      setTodos(await api.listTodos())
-    } catch (cause) {
-      if (cause instanceof ApiError && cause.status === 401) {
-        setUser(null)
-        setTodos([])
-        return
-      }
-      setError(describe(cause))
-    }
-  }, [])
-
-  const refreshBilling = useCallback(async () => {
-    try {
-      setBilling(await api.billingMe())
-    } catch (cause) {
-      // Billing is optional: an unconfigured server answers 503, and the rest of
-      // the app must keep working.
-      if (!(cause instanceof ApiError && cause.status === 401)) setBilling(null)
-    }
-  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -64,39 +31,25 @@ export function App() {
       }
       try {
         const me = await api.me()
-        if (cancelled) return
-        setUser(me)
-        await refreshTodos()
-        await refreshBilling()
-        // Returning from the provider: the plan is granted by a webhook, which
-        // may land a moment after the redirect, so re-check a few times instead
-        // of assuming it already happened.
-        if (window.location.search.includes('billing=success')) {
-          for (let attempt = 0; attempt < 5 && !cancelled; attempt += 1) {
-            await new Promise((resolve) => setTimeout(resolve, 1500))
-            await refreshBilling()
-          }
-        }
+        if (!cancelled) setUser(me)
       } catch {
         // Not signed in yet - that is the normal first-run state.
       } finally {
+        // The panels load their own data once they mount.
         if (!cancelled) setBooting(false)
       }
     })()
     return () => {
       cancelled = true
     }
-  }, [refreshTodos, refreshBilling])
+  }, [])
 
   const signIn = async (mode: 'login' | 'register', email: string, password: string) => {
     setError(null)
     try {
-      const me = mode === 'login' ? await api.login(email, password) : await api.register(email, password)
-      setUser(me)
-      await refreshTodos()
-      await refreshBilling()
+      setUser(mode === 'login' ? await api.login(email, password) : await api.register(email, password))
     } catch (cause) {
-      setError(describe(cause))
+      setError(describeError(cause))
     }
   }
 
@@ -108,51 +61,19 @@ export function App() {
       // Even if the call fails the local state must not claim a session.
     }
     setUser(null)
-    setTodos([])
-    setBilling(null)
   }
 
-  const addTodo = async (title: string) => {
+  /** A panel saw a 401, so the session is gone. Its own state dies with it. */
+  const handleUnauthorized = useCallback(() => {
     setError(null)
-    try {
-      const created = await api.createTodo(title)
-      setTodos((current) => [created, ...current])
-      // The quota moved, so the "3 of 10" line and the upgrade prompt must too.
-      await refreshBilling()
-    } catch (cause) {
-      setError(describe(cause))
-      if (cause instanceof ApiError && cause.status === 402) await refreshBilling()
-    }
-  }
-
-  const patchTodo = async (id: string, patch: { title?: string; done?: boolean }) => {
-    setError(null)
-    try {
-      const updated = await api.updateTodo(id, patch)
-      setTodos((current) => current.map((todo) => (todo.id === id ? updated : todo)))
-    } catch (cause) {
-      setError(describe(cause))
-    }
-  }
-
-  const removeTodo = async (id: string) => {
-    setError(null)
-    try {
-      await api.deleteTodo(id)
-      setTodos((current) => current.filter((todo) => todo.id !== id))
-      await refreshBilling()
-    } catch (cause) {
-      setError(describe(cause))
-    }
-  }
+    setUser(null)
+  }, [])
 
   const applyApiBase = (value: string) => {
     setApiBase(value)
     setApiBaseState(getApiBase())
     window.location.reload()
   }
-
-  const remaining = todos.filter((todo) => !todo.done).length
 
   return (
     <div className="app">
@@ -177,20 +98,14 @@ export function App() {
       {booting ? (
         <div className="card empty">Loading...</div>
       ) : user ? (
-        <>
-          <div className="card">
-            <PlanPanel billing={billing} onRefresh={refreshBilling} />
+        // One plain wrapper per feature: the shell owns the slot and its order,
+        // the feature owns everything inside. `data-feature` makes a registered
+        // panel assertable without the test knowing which features exist.
+        FEATURES.map(({ id, Panel }) => (
+          <div key={id} data-feature={id}>
+            <Panel onError={setError} onUnauthorized={handleUnauthorized} />
           </div>
-          <div className="card">
-            <TodoList
-              todos={todos}
-              remaining={remaining}
-              onCreate={addTodo}
-              onPatch={patchTodo}
-              onDelete={removeTodo}
-            />
-          </div>
-        </>
+        ))
       ) : (
         <AuthPanel onSubmit={signIn} />
       )}

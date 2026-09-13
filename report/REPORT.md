@@ -23,7 +23,7 @@
 | 一条管线（CI + CD，单文件 + 发布开关 + tag 门禁） | `.github/workflows/pipeline.yml` | ✅ 11 个 job（含 versioning）全绿 |
 | 一条 Release（默认 5 个可下载产物） | [v1.2.1](https://github.com/luty4ng/QuickLaunchTemplate/releases/tag/v1.2.1) | ✅ 由 tag 触发，同时部署上线 |
 | **线上部署**（Traefik + Let's Encrypt + compose） | https://quicklaunch.luty.tech | ✅ 公网冒烟 23/23（未配置支付时的状态） |
-| **订阅支付**（Stripe，Free/Plus/Pro 只差额度） | `backend/app/billing/`、`web/src/components/PlanPanel.tsx` | ✅ 流水线每次构建都在替身支付方上跑完整链路 |
+| **订阅支付**（Stripe，Free/Plus/Pro 只差额度） | `backend/app/features/billing/`、`web/src/features/billing/PlanPanel.tsx` | ✅ 流水线每次构建都在替身支付方上跑完整链路 |
 
 关键运行记录（全部是真实执行，可在仓库 Actions / Releases / Packages 页复核）：
 
@@ -246,7 +246,7 @@ CI 与 CD 放在**同一个文件**里用 `needs:` 串联——拆成两个文�
 
 | 实验 | 注入的错误 | 结果 | 拦在哪一步 | 下游 |
 |---|---|---|---|---|
-| A | `web/src/api.ts` 里 `(): string => 42` | ❌ 变红 | `verify-web` → **typecheck** | CD 与三端打包全部 skipped |
+| A | `web/src/api/core.ts` 里 `(): string => 42` | ❌ 变红 | `verify-web` → **typecheck** | CD 与三端打包全部 skipped |
 | B | `backend/app/security.py` 加无用 `import uuid` | ❌ 变红 | `verify-backend` → **lint** | 同上 |
 | C | `update_todo`/`delete_todo` 改成「只按 id 查、不校验归属」 | ❌ 变红 | `verify-backend` → **integration tests** | 同上 |
 

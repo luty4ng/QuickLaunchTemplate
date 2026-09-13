@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { ApiError, api } from './api'
+import { ApiError } from '../../api/core'
+import { billingApi } from './api'
 
 /**
  * Billing calls from the client.
@@ -53,7 +54,7 @@ describe('billing client', () => {
   it('reads the plan, quota and purchasable plans', async () => {
     stubFetch(() => json(ME))
 
-    const billing = await api.billingMe()
+    const billing = await billingApi.me()
 
     expect(billing.plan).toBe('free')
     expect(billing.quota.limit).toBe(10)
@@ -63,7 +64,7 @@ describe('billing client', () => {
   it('sends a plan name to checkout, never a price', async () => {
     const calls = stubFetch(() => json({ url: 'https://checkout.example.test/session' }))
 
-    await api.startCheckout('plus')
+    await billingApi.checkout('plus')
 
     const body = JSON.parse(String(calls[0]?.init.body))
     expect(body).toEqual({ plan: 'plus' })
@@ -75,7 +76,7 @@ describe('billing client', () => {
   it('carries the session cookie when starting a checkout', async () => {
     const calls = stubFetch(() => json({ url: 'https://checkout.example.test/session' }))
 
-    await api.startCheckout('pro')
+    await billingApi.checkout('pro')
 
     expect(calls[0]?.init.credentials).toBe('include')
   })
@@ -85,31 +86,22 @@ describe('billing client', () => {
       json({ error: { code: 'billing_unavailable', message: 'Billing is not configured.' } }, 503),
     )
 
-    const error = (await api.startCheckout('plus').catch((cause: unknown) => cause)) as ApiError
+    const error = (await billingApi.checkout('plus').catch((cause: unknown) => cause)) as ApiError
 
     expect(error).toBeInstanceOf(ApiError)
     expect(error.status).toBe(503)
     expect(error.code).toBe('billing_unavailable')
   })
 
-  it('exposes the quota error code the UI keys off', async () => {
-    stubFetch(() =>
-      json({ error: { code: 'quota_exceeded', message: 'The free plan allows 10 todos.' } }, 402),
-    )
-
-    const error = (await api.createTodo('one too many').catch((cause: unknown) => cause)) as ApiError
-
-    expect(error.status).toBe(402)
-    expect(error.code).toBe('quota_exceeded')
-  })
-
   it('opens the customer portal and the reconcile endpoint', async () => {
     const calls = stubFetch((url) =>
-      url.endsWith('/portal') ? json({ url: 'https://portal.example.test/x' }) : json({ plan: 'plus', status: 'active', changed: true }),
+      url.endsWith('/portal')
+        ? json({ url: 'https://portal.example.test/x' })
+        : json({ plan: 'plus', status: 'active', changed: true }),
     )
 
-    await api.openPortal()
-    const synced = await api.syncBilling()
+    await billingApi.portal()
+    const synced = await billingApi.sync()
 
     expect(calls.map((call) => call.url)).toEqual(['/api/billing/portal', '/api/billing/sync'])
     expect(calls.every((call) => call.init.method === 'POST')).toBe(true)
