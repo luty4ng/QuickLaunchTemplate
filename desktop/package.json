@@ -35,6 +35,7 @@
       "main.js",
       "preload.js",
       "lib/**/*",
+      "app-config.json",
       "package.json"
     ],
     "extraResources": [

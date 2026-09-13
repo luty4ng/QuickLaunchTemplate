@@ -44,6 +44,9 @@ class Settings(BaseSettings):
     # Directory holding the built web client. Mounted into the image; the API
     # falls back to "API only" mode when it is missing (useful in tests).
     web_dist: Path = REPO_ROOT / "web" / "dist"
+    # Where the desktop update feed lives. Served by this app at
+    # /updates/latest.yml, written by the release pipeline on the server.
+    updates_file: Path = REPO_ROOT / "updates" / "latest.yml"
 
     # --- Plans and quotas -------------------------------------------------
     # Todo limits per plan. `None` means unlimited; keep it out of the JSON

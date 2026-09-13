@@ -11,9 +11,10 @@
 //   * the API origin comes from `QL_API_BASE` (build time) or the in-app
 //     "Server" setting (runtime);
 //   * it gets no Node integration - only a tiny preload surface;
-//   * it updates itself: electron-updater reads `latest.yml` from this
-//     repository's GitHub Releases, downloads the installer in the background and
-//     installs it on one click. See `setupAutoUpdate` below.
+//   * it updates itself: electron-updater reads `latest.yml` from this project's
+//     own domain (`/updates/latest.yml`, served by the API), downloads the
+//     installer in the background and installs it on one click. See
+//     `setupAutoUpdate` below.
 //
 // `--ql-self-test` turns the app into its own integration test: boot, wait for
 // React to mount, call the API from inside the renderer, write a JSON report and
@@ -39,10 +40,22 @@ const UPDATE_CHECK = process.env.QL_UPDATE_CHECK !== 'false'
 // The self-test only wants to know what the feed offers; downloading a 110 MB
 // installer (and then not installing it) is not part of proving detection.
 const UPDATE_AUTODOWNLOAD = process.env.QL_UPDATE_AUTODOWNLOAD !== 'false'
-// Points the updater at a specific feed file. Used to test against a published
-// release without depending on which release GitHub considers newest, and to
-// test a lower version without publishing anything.
-const UPDATE_FEED_URL = process.env.QL_UPDATE_FEED_URL
+// Where the updater reads its feed. This used to be implicit: electron-updater's
+// GitHub provider looks for `latest.yml` among the assets of the newest release,
+// which meant every release had to carry that file. It is now served by this
+// project's own API (`/updates/latest.yml`) so that a release contains exactly one
+// file - the installer - while installed clients still learn about new versions.
+// `QL_UPDATE_FEED_URL` overrides it at runtime, which the self-test uses to point
+// a build at any feed (including one advertising a lower version).
+const BAKED_CONFIG = (() => {
+  try {
+    return require('./app-config.json')
+  } catch {
+    // Unpackaged `npm start`, or a build that never got the file.
+    return {}
+  }
+})()
+const UPDATE_FEED_URL = process.env.QL_UPDATE_FEED_URL || BAKED_CONFIG.updateFeedUrl || ''
 
 const { isNewer, compareVersions } = require('./lib/version')
 
@@ -103,9 +116,12 @@ function setupAutoUpdate() {
   autoUpdater.autoDownload = UPDATE_AUTODOWNLOAD
   autoUpdater.autoInstallOnAppQuit = true
   if (UPDATE_FEED_URL) {
-    // Testing hook: read one specific latest.yml instead of guessing which
-    // release GitHub calls newest.
+    // A generic feed: read that latest.yml rather than asking GitHub which release
+    // it considers newest. The blockmap is deliberately not published (a release
+    // carries only the installer), so a differential download would have nothing
+    // to diff against - ask for the whole file instead of a doomed 404 first.
     autoUpdater.setFeedURL({ provider: 'generic', url: UPDATE_FEED_URL })
+    autoUpdater.disableDifferentialDownload = true
   }
 
   autoUpdater.on('checking-for-update', () => publishState({ status: 'checking' }))

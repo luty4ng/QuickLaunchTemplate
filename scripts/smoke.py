@@ -376,6 +376,42 @@ def fake_origin(checkout_url: str) -> str:
     return f"{parsed.scheme}://{parsed.netloc}"
 
 
+def check_update_feed(base_url: str) -> None:
+    """The desktop update feed, from the outside.
+
+    Installed clients read `/updates/latest.yml` on every launch to decide whether
+    to offer an update. It is served by the application rather than published as a
+    release asset, so this is the only place that proves the whole chain works:
+    file on the server -> mounted into the container -> answered on the public URL.
+
+    A 404 is not a failure: a deployment that has never published a desktop
+    release legitimately has no feed (that is what the API answers), and the
+    pipeline's own `update-feed` job is the gate that a *published* release has a
+    good feed. Here we only assert that if the feed answers at all, it answers
+    with something a client can use.
+    """
+    status, body, _ = Session(base_url).request("GET", "/updates/latest.yml", timeout=15)
+    if status == 404:
+        record(
+            "update feed: no desktop release published yet",
+            True,
+            "skipped - the feed answers 404 until a release is published",
+        )
+        return
+    if status != 200 or not isinstance(body, str):
+        record("update feed: readable", False, f"status={status}")
+        return
+    version = next(
+        (line.split(":", 1)[1].strip() for line in body.splitlines() if line.startswith("version:")), ""
+    )
+    has_url = "url: http" in body
+    record(
+        "update feed: readable and usable",
+        bool(version) and has_url,
+        f"version={version or '(missing)'} absolute_url={has_url}",
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -420,6 +456,7 @@ def main() -> int:
     check_isolation(args.base_url)
     if not args.skip_billing:
         check_billing(args.base_url)
+    check_update_feed(args.base_url)
 
     failed = [name for name, ok, _ in CHECKS if not ok]
     print(f"\n{len(CHECKS) - len(failed)}/{len(CHECKS)} checks passed", flush=True)

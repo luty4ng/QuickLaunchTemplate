@@ -22,7 +22,7 @@ from app import __version__
 from app.billing import router as billing
 from app.config import REPO_ROOT, get_settings
 from app.deps import install_error_handler
-from app.routers import auth, health, todos
+from app.routers import auth, health, todos, updates
 
 log = logging.getLogger("quicklaunch")
 
@@ -82,6 +82,9 @@ def create_app() -> FastAPI:
     app.include_router(auth.router, prefix="/api")
     app.include_router(todos.router, prefix="/api")
     app.include_router(billing.router, prefix="/api")
+    # Registered before the SPA catch-all below, which would otherwise answer
+    # /updates/latest.yml with index.html.
+    app.include_router(updates.router)
     _mount_web_client(app, settings.web_dist)
     return app
 

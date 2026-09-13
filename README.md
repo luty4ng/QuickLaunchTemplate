@@ -87,16 +87,16 @@ python scripts/project_env.py bootstrap --repo owner/name --domain x.y --slug z 
 
 ## 实际发布什么
 
-**一次 Release 只有 3 个文件**——安装包、更新清单、增量块文件。网页端和 API 走容器镜像，
-不往 Release 里塞；免安装 zip 与静态网页包已经去掉（它们不在安装/更新链路上，
-只是让下载页变吵）。GitHub 还会自动附上两个源码包，那两项删不掉。
+**一次 Release 只有一个文件：安装包。** 更新源（`latest.yml`）不再作为 Release 附件发布，
+它由应用自己提供（`GET /updates/latest.yml`）；网页端和 API 走容器镜像。
+GitHub 还会自动附上两个源码包，那两项删不掉。
 
 | 目标 | 产物 | 默认 | 由谁产出 |
 |---|---|---|---|
-| Windows 桌面端 | `QuickLaunch-Setup-<version>-x64.exe` | **发布** | `desktop` job |
-| 桌面端更新源 | `latest.yml` + `*.exe.blockmap`（客户端靠前者判断新版，靠后者只下变化的字节） | **发布** | `desktop` job |
+| Windows 桌面端 | `QuickLaunch-Setup-<version>-x64.exe`（安装包；更新时下载的也是它） | **发布** | `desktop` job |
+| 桌面端更新源 | 应用自己发的 `/updates/latest.yml`（**不是** Release 附件） | **发布** | `update-feed` job |
 | 网页端 + API | `ghcr.io/luty4ng/quicklaunchtemplate:sha-<commit>`（一个镜像同时提供两者） | **发布** | `docker` job |
-| Linux 桌面端 | `*.AppImage`、`*.deb`、`latest-linux.yml` | 关闭 | `desktop` job |
+| Linux 桌面端 | `*.AppImage`、`*.deb` | 关闭 | `desktop` job |
 | 安卓端 | `app-debug.apk`（可直接安装，debug 签名） | 关闭 | `android` job |
 
 > **一次 tag = 全套验证 + 明确的产物清单。** 路径过滤器只用于分支推送省时间；打 tag 时它被显式
@@ -127,17 +127,25 @@ Linux 与安卓默认关闭，是因为本项目只服务 Windows 客户端和�
 ## 桌面端自动更新
 
 已安装的 Windows 客户端启动时会检查更新源，后台下载新安装包，用户点**一次**
-「Restart and update」即完成升级。它读取最新 Release 里的 `latest.yml`——
-该文件由 electron-builder 生成，由 `release` job 发布。
+「Restart and update」即完成升级。
+
+**更新源由应用自己提供**：`GET /updates/latest.yml`。客户端里那个地址写在
+`desktop/app-config.json`（`project_env.py check` 保证它与 `project.env` 的域名一致）。
+为什么不放在 Release 里：下载页上就只会剩安装包一个文件，而 feed 本来也不是给人点的东西。
+发布流程是：`desktop` job 打包 → `release` job 发布安装包 → `update-feed` job 把 feed
+写到服务器并**验证公网真的读得到**（这一步失败，整条发布就失败）。
+
+代价说清楚：feed 里的 URL 指向 GitHub 的 Release 附件，而 blockmap 不再发布，
+所以**更新是整包下载**（约 110 MB），没有增量。
 
 更新路径是**被验证过的**，不是假设：`desktop-self-test` 在 Windows runner 上真启动打包后的应用，
-让它读**真实发布的更新源**，并报告自己得出的结论。要专门触发「有更新」分支，用一个比线上更低的版本发布：
+让它读**线上真实 feed**，并报告自己得出的结论。要专门触发「有更新」分支，用一个比线上更低的版本发布：
 
 ```bash
 gh workflow run pipeline --ref main -f version=0.0.1 -f draft=true
 ```
 
-这样会打包出一个比线上版本更旧的客户端（发成 draft，所以下载页不会出现它），
+这样会打包出一个比线上版本更旧的客户端（发成 draft，所以下载页不会出现它，也不会覆盖 feed），
 自检必须报告 `update-available`。
 
 **安装那一步是 CI 无法演练的**（它会在 runner 上装软件并重启），

@@ -4,20 +4,25 @@
 > 外加 GitHub 自动附的源码包两个）。**目标形态：一次发版只出安装包。**
 > 本文先回答"这些文件各自是什么、能不能砍"，再给出分步精简方案，最后把整个模板的
 > 可配置项收成一张表——想改什么，改哪里。
+>
+> **最终结果（2026-09-14）**：一次 Release 只剩 **1 个文件**（安装包）。
+> 免安装 zip 与静态网页包删除；`latest.yml` 与 blockmap 不再发布——
+> 更新源改由应用自己提供（`GET /updates/latest.yml`），代价是更新变成整包下载。
+> 见 §3 的"已执行"。
 
 ---
 
 ## 0. 结论
 
-**能砍到"只有安装包"吗？几乎——但必须留下 `latest.yml`（和 blockmap）。**
+**能砍到"只有安装包"吗？能，但 `latest.yml` 必须换个地方活下来。**
 
 | 文件 | 大小 | 必需？ | 原因 |
 |---|---|---|---|
 | `QuickLaunch-Setup-<v>-x64.exe` | 107 MB | **必需** | 用户安装和更新装的就是它 |
-| `latest.yml` | 359 B | **必需** | 已装客户端靠它判断有没有新版本；**最新 Release 里没有它，自动更新就静默失效**（踩过） |
-| `*.exe.blockmap` | 115 KB | **强烈建议保留** | 有它只下载变化的块；没有它每次更新全量 107 MB |
-| `QuickLaunch-<v>-win.zip` | 146 MB | **可以砍** | 免安装版，更新链路上没人用它 |
-| `web-<sha>.zip` | 72.5 KB | **可以砍**（或改成开关） | 只有"网页端单独托管到别处"时才用得上；镜像里本来就带前端 |
+| `latest.yml` | 359 B | **必需，但不必在 Release 里** | 已装客户端靠它判断有没有新版本；**读不到它，自动更新就静默失效**（踩过）。现在由应用在 `/updates/latest.yml` 提供 |
+| `*.exe.blockmap` | 115 KB | 可以不要 | 有它只下载变化的块；没有它每次更新全量 107 MB。已确认不要 |
+| `QuickLaunch-<v>-win.zip` | 146 MB | **已删除** | 免安装版，更新链路上没人用它 |
+| `web-<sha>.zip` | 72.5 KB | **已删除** | 只有"网页端单独托管到别处"时才用得上；镜像里本来就带前端 |
 | `Source code (zip/tar.gz)` | — | **砍不掉** | GitHub 给每个 Release 自动附的源码包，它们不是 asset，无法单独移除 |
 
 所以推荐的目标形态是 **3 个文件**：安装包 + `latest.yml` + blockmap。三项里唯一"多出来"的
@@ -97,7 +102,26 @@ blockmap 是 115 KB，换来的是更新体积从 107 MB 降到几 MB——建�
 > **已执行（2026-09-14）**：直接删除，不留开关。`release` job 不再下载 `web-dist`
 > 产物、不再打 zip；`files:` 同时从通配符改成**白名单**（见下）。
 
-### 第 3 步（可选）：GHCR 推送按需
+### 第 3 步：更新源从 Release 搬到应用自己身上（**已执行**）
+
+`latest.yml` 与 blockmap 也不再作为 Release 附件。做法：
+
+| 环节 | 变化 |
+|---|---|
+| 应用 | 新增 `GET /updates/latest.yml`，从 `~/<slug>/updates/`（只读挂进容器）读文件 |
+| 客户端 | `desktop/app-config.json` 里写死 feed 地址（`https://<域名>/updates`），运行时可用 `QL_UPDATE_FEED_URL` 覆盖（自检用）；同时关掉差分下载 |
+| 打包 | `desktop` job 用 `scripts/make_feed.py` 把 electron-builder 的 `latest.yml` 改写成**绝对 URL**（指向 Release 里的安装包），作为单独的小产物交给下一步 |
+| 发布 | 新 job `update-feed`：把 feed 写到服务器 `~/<slug>/updates/`，然后**打公网地址验证** feed 存在且版本号正是这次发布的版本——不通过就判发布失败 |
+| 门禁 | 冒烟测试新增一项：`/updates/latest.yml` 可读且含绝对 URL（没发布过桌面版时按 skip 处理） |
+
+代价（明确写出来）：**更新变成整包下载**（约 110 MB），没有增量；
+且更新源依赖自己的服务器（GitHub 的可用性换成了自己的可用性）。
+好处是下载页只剩安装包一个文件，客户端要的东西一样没少。
+
+> 注意一次性影响：已经装了 **1.2.3 及更早版本**的客户端仍然只会读 GitHub Release 里的 feed，
+> 而那个 feed 不再更新——需要手动装一次 1.2.4；从 1.2.4 起自动更新照常。
+
+### 第 4 步（可选，未做）：GHCR 推送按需
 
 * 线上是**服务器本地构建**（那台机器拉 ghcr.io 只有 74 B/s，拉不动），
   所以 GHCR 镜像目前只有"对外分发/留档"的意义。
@@ -108,10 +132,11 @@ blockmap 是 115 KB，换来的是更新体积从 107 MB 降到几 MB——建�
 ### 做完之后的样子
 
 ```
-一次 tag v1.2.3 →
-  Release 里 3 个文件：QuickLaunch-Setup-1.2.3-x64.exe + latest.yml + *.blockmap
+一次 tag v1.2.4 →
+  Release 里 1 个文件：QuickLaunch-Setup-1.2.4-x64.exe
   （外加 GitHub 自动附的 Source code 两个，删不掉）
-  线上仍旧自动部署 + 公网冒烟；桌面端仍旧一键自动更新
+  更新源：https://<域名>/updates/latest.yml（应用自己发，update-feed job 负责写并验证）
+  线上仍旧自动部署 + 公网冒烟；桌面端仍旧一键自动更新（整包下载）
 ```
 
 另外把 `release` job 的 `files:` 从通配符改成了**白名单**：
@@ -119,11 +144,8 @@ blockmap 是 115 KB，换来的是更新体积从 107 MB 降到几 MB——建�
 ```yaml
 files: |
   dist/desktop/*.exe
-  dist/desktop/*.blockmap
-  dist/desktop/latest.yml
   dist/linux/*.AppImage
   dist/linux/*.deb
-  dist/linux/latest-linux.yml
   dist/android/*.apk
 ```
 

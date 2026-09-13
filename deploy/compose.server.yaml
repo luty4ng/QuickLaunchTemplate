@@ -25,6 +25,11 @@ services:
     networks:
       - default
       - traefik-net
+    volumes:
+      # 桌面端的更新源：CI 把 latest.yml 写进 ~/<slug>/updates/，应用直接把它读出来
+      # （GET /updates/latest.yml）。放在 Release 里会让下载页多一个 yml 文件，
+      # 而客户端要的只是这个 feed，所以由应用自己发。
+      - ./updates:/app/updates:ro
     labels:
       traefik.enable: "true"
       traefik.docker.network: traefik-net

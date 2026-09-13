@@ -49,6 +49,7 @@ CHECKED_FILES = (
     "deploy/compose.server.yaml",
     "deploy/deploy.sh",
     "desktop/package.json",
+    "desktop/app-config.json",
     "mobile/capacitor.config.json",
 )
 
@@ -194,6 +195,18 @@ def check(values: dict[str, str]) -> list[str]:
                 f"desktop/package.json: {field} is {actual[field]!r}, expected {expected!r} "
                 + ("(a wrong publish.owner stops desktop auto-update silently)" if "publish" in field else "")
             )
+
+    # The desktop app reads its update feed from this project's own domain; the
+    # value is baked into the package, so a stale one would point installed
+    # clients at the previous project's server - and they would look up to date
+    # forever, which is the silent failure this whole check exists for.
+    app_config = json.loads(read("desktop/app-config.json"))
+    expected_feed = f"https://{v['APP_DOMAIN']}/updates"
+    if app_config.get("updateFeedUrl") != expected_feed:
+        problems.append(
+            f"desktop/app-config.json: updateFeedUrl is {app_config.get('updateFeedUrl')!r}, "
+            f"expected {expected_feed!r}"
+        )
 
     mobile = json.loads(read("mobile/capacitor.config.json"))
     if mobile.get("appId") != v["MOBILE_APP_ID"]:

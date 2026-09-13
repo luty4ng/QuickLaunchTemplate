@@ -439,11 +439,11 @@ STRIPE_WEBHOOK_SECRET=whsec_fake_secret python scripts/fake_stripe.py \
 **能做什么**：已安装的 Windows 客户端启动时会静默检查更新，发现新版本就在后台下载，
 界面出现一个横条和**一个按钮**——点它即安装并重启到新版本。这就是「用户只需在客户端里一键拉取最新版」。
 
-**怎么做到的**（`electron-updater` + 仓库自己的 GitHub Releases 作为更新源）：
+**怎么做到的**（`electron-updater` + 应用自己提供的 feed 作为更新源）：
 
 | 环节 | 实现 |
 |---|---|
-| 更新源 | Release 里的 `latest.yml`（electron-builder 生成，含版本号、安装包名、sha512、大小） |
+| 更新源 | 应用自己发的 `/updates/latest.yml`（`scripts/make_feed.py` 把 electron-builder 的 feed 改写成绝对 URL，指向 Release 里的安装包；由 `update-feed` job 写到服务器并验证公网可读） |
 | 检查 | 应用启动时静默检查；界面「Server」旁也有「Check for updates」按钮 |
 | 下载 | 后台自动下载，进度通过 IPC 推到界面 |
 | 安装 | `quitAndInstall()`，界面上的「Restart and update」按钮触发 |
@@ -482,8 +482,9 @@ STRIPE_WEBHOOK_SECRET=whsec_fake_secret python scripts/fake_stripe.py \
 
 | 目标 | 默认 | 产物 |
 |---|---|---|
-| Windows 桌面端 | **开** | `QuickLaunch-Setup-<version>-x64.exe`、`latest.yml`、`blockmap` |
+| Windows 桌面端 | **开** | `QuickLaunch-Setup-<version>-x64.exe`（Release 里唯一的文件） |
 | 网页端 + API | **开** | `ghcr.io/luty4ng/quicklaunchtemplate:sha-<commit>` |
+| 桌面端更新源 | **开** | 应用自己发的 `/updates/latest.yml`（不是 Release 附件） |
 | Linux 桌面端 | 关 | `*.AppImage`、`*.deb`、`latest-linux.yml` |
 | 安卓端 | 关 | `app-debug.apk` |
 
@@ -698,10 +699,16 @@ CI 每次部署都会**演练一遍回滚**（重新部署上一个 `sha-` tag �
 
 ### 15.1 发版产物的精简（已执行）
 
-一次 Release 原本挂着 5 个产物 + GitHub 自动附的 2 个源码包，其中**只有 3 个是必需的**：
-安装包、`latest.yml`（客户端靠它判断新版本）、blockmap（增量下载）。
-免安装 zip（146 MB）与静态网页 zip（72 KB）已按用户确认删除；
-`release` job 的附件清单同时从通配符改成**白名单**，避免将来多出的构建输出自动变成下载项。
+一次 Release 原本挂着 5 个产物 + GitHub 自动附的 2 个源码包，**现在只剩 1 个：安装包**。
+
+| 去掉的东西 | 理由 |
+|---|---|
+| 免安装 zip（146 MB） | 不在安装/更新链路上 |
+| 静态网页 zip（72 KB） | 只有"网页端单独托管"才用得上；镜像里始终带前端 |
+| `latest.yml`（更新源） | 改由**应用自己**在 `/updates/latest.yml` 提供——新 job `update-feed` 把它写到服务器并打公网验证。下载页因此只剩一个文件，客户端要的东西一样没少 |
+| `*.exe.blockmap` | 不发布就没有增量下载：更新变成整包（约 110 MB）。换来的是 feed 里少一处会 404 的引用 |
+
+`release` job 的附件清单同时从通配符改成**白名单**（将来多出的构建输出不会自动变成下载项）；
 桌面端的"可真跑产物"改由单独的 CI 产物提供（`desktop-windows-unpacked`，保留 1 天、不进 Release），
-所以 `desktop-self-test` 仍然真的启动打包后的应用去读真实更新源。
+所以 `desktop-self-test` 仍然真的启动打包后的应用去读**线上真实 feed**。
 完整梳理见 `report/PIPELINE-REVIEW.md`。

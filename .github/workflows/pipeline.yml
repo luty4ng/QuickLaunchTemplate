@@ -825,7 +825,7 @@ jobs:
 
       # The unpacked app, for the self-test job only: it needs something it can
       # actually start, and the published artifact set is deliberately just the
-      # installer + update feed. Kept for a day because it is ~300 MB.
+      # installer. Kept for a day because it is ~300 MB.
       - if: matrix.target == 'windows'
         uses: actions/upload-artifact@v7
         with:
@@ -856,6 +856,33 @@ jobs:
             exit 1
           fi
 
+      # The feed a client reads is no longer a release asset - a release carries
+      # exactly one file, the installer. It is served by the application instead,
+      # so it has to be rewritten to point at the release asset by absolute URL,
+      # and handed to the job that puts it on the server.
+      - if: matrix.enabled == 'true' || matrix.target == 'windows'
+        name: build the feed the app will serve
+        shell: bash
+        env:
+          VERSION: ${{ needs.versioning.outputs.version }}
+          REPO: ${{ github.repository }}
+          SOURCE_FEED: ${{ matrix.target == 'windows' && 'latest.yml' || 'latest-linux.yml' }}
+        run: |
+          set -euo pipefail
+          python scripts/make_feed.py \
+            --input "desktop/release/$SOURCE_FEED" \
+            --output "updates/$SOURCE_FEED" \
+            --version "$VERSION" \
+            --repo "$REPO"
+
+      - if: matrix.enabled == 'true' || matrix.target == 'windows'
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.target == 'windows' && 'update-feed' || 'update-feed-linux' }}
+          path: updates/*.yml
+          if-no-files-found: error
+          retention-days: 7
+
   # Packaging a desktop app is not evidence that it runs. This job installs the
   # artifact on a real Windows machine, boots it headlessly, and lets it call the
   # API from inside the renderer and read a real published update feed.
@@ -874,6 +901,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: load the project identity
+        run: python3 scripts/project_env.py export >> "$GITHUB_ENV"
+
       - uses: actions/download-artifact@v8
         with:
           name: desktop-windows-unpacked
@@ -883,36 +913,23 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      # Read the feed from the newest PUBLISHED release that is not the one this
-      # run publishes. Drafts are skipped for two reasons: an unpublished draft is
-      # exactly the release this test build would be looking past, and the API the
-      # real updater queries does not list drafts at all - so pointing the test at
-      # one would test something the client can never see.
+      # Read the feed the app actually uses. It is published by the `update-feed`
+      # job, after the release it points at, so what the client sees here is what
+      # an installed client would see - not a copy made up for the test.
       - name: resolve the update feed to test against
         id: feed
         shell: bash
+        env:
+          FEED_URL: ${{ env.SMOKE_URL }}/updates
         run: |
           set -euo pipefail
-          exclude="v${{ needs.versioning.outputs.version }}"
-          echo "ignoring release $exclude (that is this build)"
-          url="$(curl -fsSL -H 'Accept: application/vnd.github+json' \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases?per_page=30" \
-            | python -c "
-          import json, sys
-          releases = json.load(sys.stdin)
-          exclude = sys.argv[1]
-          for release in releases:            # newest first
-              if release['tag_name'] == exclude or release['draft']:
-                  continue
-              if any(a['name'] == 'latest.yml' for a in release.get('assets', [])):
-                  print(release['assets'][0]['browser_download_url'].rsplit('/', 1)[0])
-                  break
-          " "$exclude")"
-          if [ -z "$url" ]; then
-            echo "::warning::no earlier release publishes latest.yml yet; leaving the updater on its default feed"
+          if curl -fsS "$FEED_URL/latest.yml"; then
+            echo "feed=$FEED_URL" >> "$GITHUB_OUTPUT"
+            echo "feed under test: $FEED_URL"
+          else
+            echo "::warning::no update feed is published yet; the app will use the one baked into this build"
+            echo "feed=" >> "$GITHUB_OUTPUT"
           fi
-          echo "feed=$url" >> "$GITHUB_OUTPUT"
-          echo "feed under test: ${url:-(none)}"
 
       - name: check the app we are about to run
         shell: pwsh
@@ -1186,20 +1203,24 @@ jobs:
           body: |
             Desktop build **${{ needs.versioning.outputs.version }}** from `${{ github.sha }}`.
 
-            Installed Windows clients update themselves: they read `latest.yml` from this
-            release, download in the background and install on one click. That is why a
-            release holds exactly what installing and updating need, and nothing else.
+            Installed Windows clients update themselves: they read `latest.yml` from
+            this project's own domain (`/updates/latest.yml`), download in the background
+            and install on one click. That is why a release holds exactly one file: the
+            installer. The update feed is not a release asset, because the only thing it
+            would do there is clutter the downloads page.
 
             | file | what it is for |
             |---|---|
-            | `QuickLaunch-Setup-${{ needs.versioning.outputs.version }}-x64.exe` | the installer users run |
-            | `latest.yml` | the version check every installed client performs |
-            | `*.exe.blockmap` | lets an update download only the changed bytes instead of all 107 MB |
+            | `QuickLaunch-Setup-${{ needs.versioning.outputs.version }}-x64.exe` | the installer users run; the update feed points here |
             ${{ needs.changes.outputs.publish_linux == 'true' && '| `*.AppImage`, `*.deb` | Linux packages (switch is on) |' || '' }}
             ${{ needs.changes.outputs.publish_android == 'true' && '| `app-debug.apk` | Android build (switch is on) |' || '' }}
 
-            The web client and API are not attached here: they ship as the container image
-            `${{ env.IMAGE }}:sha-${{ github.sha }}`.
+            The update feed is already live at `${{ env.SMOKE_URL }}/updates/latest.yml`, and
+            installed clients check it on every launch. Updates download the full installer:
+            no blockmap is published, so there is nothing to diff against.
+
+            The web client and API are not attached here either: they ship as the container
+            image `${{ env.IMAGE }}:sha-${{ github.sha }}`.
 
             A client only updates to a version **higher** than the one it runs, so this
             release must keep its version: retagging or lowering it stops updates.
@@ -1207,16 +1228,94 @@ jobs:
             Linux desktop and Android are off by default; turn them on with the
             repository variables `PUBLISH_LINUX` / `PUBLISH_ANDROID`.
           # An allowlist, not a glob: a new build output must not become a published
-          # asset by accident. Directories (the unpacked app) are deliberately absent.
+          # asset by accident. The installer is the only file a human downloads -
+          # `latest.yml` and the blockmap are not published at all (the feed is
+          # served by the application, and without a blockmap updates download the
+          # whole installer).
           files: |
             dist/desktop/*.exe
-            dist/desktop/*.blockmap
-            dist/desktop/latest.yml
             dist/linux/*.AppImage
             dist/linux/*.deb
-            dist/linux/latest-linux.yml
             dist/android/*.apk
           fail_on_unmatched_files: false
+
+  # ---------------------------------------------------------------------
+  # 4b. Publish the desktop update feed.
+  #
+  #     Installed clients need a `latest.yml` to read; a release is not allowed to
+  #     carry it (one file, the installer), so the application serves it at
+  #     /updates/latest.yml from a directory on the server that this job writes.
+  #     The last step is the gate: the feed has to answer on the public URL and
+  #     advertise exactly the version that was just released - otherwise every
+  #     installed client is either stuck or being pointed at the wrong build.
+  # ---------------------------------------------------------------------
+  update-feed:
+    name: cd / publish the desktop update feed
+    runs-on: ubuntu-latest
+    needs: [versioning, desktop, release]
+    if: |
+      always()
+      && !cancelled()
+      && !contains(needs.*.result, 'failure')
+      && (github.ref_type == 'tag' || (inputs.version != '' && inputs.draft != true))
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: load the project identity
+        run: python3 scripts/project_env.py export >> "$GITHUB_ENV"
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: update-feed
+          path: updates
+
+      - if: needs.changes.outputs.publish_linux == 'true'
+        uses: actions/download-artifact@v8
+        with:
+          name: update-feed-linux
+          path: updates
+        continue-on-error: true
+
+      - name: install the deploy key
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" | tr -d '\r' > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          for attempt in 1 2 3; do
+            ssh-keyscan -t ed25519,rsa "${{ vars.DEPLOY_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null && break
+            sleep 2
+          done
+          ssh-keygen -F "${{ vars.DEPLOY_HOST }}" -f ~/.ssh/known_hosts >/dev/null \
+            || { echo "::error::could not obtain a host key for ${{ vars.DEPLOY_HOST }}"; exit 1; }
+
+      - name: copy the feed to the server
+        run: |
+          set -euo pipefail
+          ls -l updates
+          scp -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o BatchMode=yes \
+            updates/*.yml "${{ vars.DEPLOY_USER }}@${{ vars.DEPLOY_HOST }}:~/$APP_DIR/updates/"
+
+      - name: the feed must answer on the public url
+        run: |
+          set -euo pipefail
+          url="$SMOKE_URL/updates/latest.yml"
+          echo "reading $url"
+          for attempt in $(seq 1 20); do
+            if body="$(curl -fsS "$url")"; then
+              printf '%s\n' "$body"
+              echo "$body" | grep -q "version: ${{ needs.versioning.outputs.version }}" \
+                || { echo "::error::$url does not advertise ${{ needs.versioning.outputs.version }}"; exit 1; }
+              echo "::notice::the update feed is live and advertises ${{ needs.versioning.outputs.version }}"
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "::error::$url did not answer - installed clients cannot see new versions"
+          exit 1
 
   # ---------------------------------------------------------------------
   # 5. Ship it to the server.
