@@ -256,6 +256,21 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "scope: backend=$backend web=$web deployable=$deployable"
 
+      # The server-side scripts only ever run on a Linux box, so nothing else in CI
+      # would notice a syntax error in them until a deployment failed. `bash -n`
+      # parses without executing - one second here instead of a red deploy.
+      #
+      # It lives in `changes` rather than `verify-backend` on purpose: `verify-backend`
+      # is skipped when a commit only touches deploy/ (the path filter does not count
+      # it as backend), which is exactly the commit that changes these scripts.
+      - name: shell scripts parse
+        run: |
+          set -euo pipefail
+          for script in deploy/*.sh; do
+            echo "checking $script"
+            bash -n "$script"
+          done
+
       # Renaming a project means touching a dozen files, and the failure modes
       # differ wildly: a stale `REPO_SLUG` in deploy.sh fails the deployment
       # loudly, while a stale electron-builder `publish.owner` makes desktop
@@ -319,16 +334,6 @@ jobs:
           ruff check ../scripts
           ruff format --check ../scripts
 
-      # The server-side scripts only ever run on a Linux box, so nothing else in CI
-      # would notice a syntax error in them until a deployment failed. `bash -n`
-      # parses without executing - one second here instead of a red deploy.
-      - name: shell scripts parse
-        run: |
-          set -euo pipefail
-          for script in deploy/*.sh; do
-            echo "checking $script"
-            bash -n "$script"
-          done
 
       - name: migrations apply to postgres 16
         working-directory: backend
