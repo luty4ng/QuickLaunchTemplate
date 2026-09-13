@@ -22,8 +22,8 @@
 |---|---|---|
 | `changes` | 路径过滤、发布开关、**项目标识漂移检查**（`project_env.py check`） | 从不跳过（它决定别人跳不跳） |
 | `versioning` | 从 tag/输入取版本；tag 必须严格大于已发布最高版本 | 从不跳过 |
-| `verify-backend` | ruff + 迁移可升可回滚（postgres 16）+ 全部后端测试 | 本次提交没碰后端/脚本/工作流 |
-| `verify-web` | lint + typecheck + 前端测试 + 生产构建 | 本次提交没碰前端/桌面/移动端/工作流 |
+| `verify-backend` | ruff + 迁移可升可回滚（postgres 16）+ 全部后端测试 + 迁移预演（删掉示例业务后骨架仍自洽） | 本次提交没碰后端/脚本/工作流 |
+| `verify-web` | lint + typecheck + 前端测试 + 生产构建 + 迁移预演的前端半场 | 本次提交没碰前端/桌面/移动端/工作流 |
 | `docker` | 构建镜像并推 GHCR | pull_request，或上游失败 |
 | `smoke-image` | 在 runner 上真起一套栈冒烟镜像（含支付链路） | 没有"进镜像"的改动（`deployable=false`）且不是在手动触发 |
 | `desktop` | 打包 Windows 安装包（Linux 腿默认关，跑成绿色 no-op） | pull_request |

@@ -38,11 +38,11 @@ function featuresOnDisk(): string[] {
 }
 
 describe('skeleton / feature boundary', () => {
+  // No "at least one feature" assertion on purpose: a migrated project starts
+  // with none, and the shell has to render fine in that state. What is asserted
+  // is that the folders and the registry agree.
   it('gives every feature folder a FEATURE export and registers it', async () => {
-    const names = featuresOnDisk()
-    expect(names.length).toBeGreaterThan(0)
-
-    for (const name of names) {
+    for (const name of featuresOnDisk()) {
       const module = (await import(`./features/${name}/index.ts`)) as {
         FEATURE?: { id?: string; Panel?: unknown }
       }
@@ -52,6 +52,15 @@ describe('skeleton / feature boundary', () => {
         FEATURES.some((feature) => feature.id === module.FEATURE?.id),
         `${name} is missing from FEATURES in src/features/index.ts`,
       ).toBe(true)
+    }
+  })
+
+  it('registers nothing that has no folder on disk', async () => {
+    for (const feature of FEATURES) {
+      const module = (await import(`./features/${feature.id}/index.ts`)) as { FEATURE?: { id?: string } }
+      expect(module.FEATURE?.id, `FEATURES names ${feature.id}, but src/features/${feature.id}/ does not`).toBe(
+        feature.id,
+      )
     }
   })
 

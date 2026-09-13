@@ -97,7 +97,6 @@ describe('app shell', () => {
 
     const view = await mount(<App />)
 
-    expect(FEATURES.length).toBeGreaterThan(0)
     expect(view.textContent).toContain(USER.email)
     expect(view.textContent).toContain('API ok v9.9.9')
     // The brand is one rewritable literal, and the accent lives on a span inside

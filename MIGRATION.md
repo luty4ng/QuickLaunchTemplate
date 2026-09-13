@@ -95,6 +95,7 @@ bash deploy/bootstrap-server.sh --with-traefik --acme-email you@example.com   # 
 
 ```bash
 rm -rf backend/app/features/todos backend/app/features/billing
+rm -rf backend/tests/unit/features backend/tests/integration/features   # 它们跟着业务一起走
 mkdir -p backend/app/features/<你的功能>/
 # 最小形态：
 #   __init__.py   FEATURE = Feature(name="<你的功能>", router=router)
@@ -106,6 +107,14 @@ mkdir -p backend/app/features/<你的功能>/
 
 然后在 `backend/app/features/__init__.py` 的 `FEATURES` 里换掉那两项。
 **不需要动 `main.py`**——它只调用 `features.load(app)`。
+
+骨架自己的测试是 `tests/unit/`、`tests/integration/` 下**不在** `features/` 里的那些文件
+（健康检查、注册登录、会话、错误信封、更新源、分层守卫），迁移时一行都不用改。
+要确认自己真的删干净了，跑一次预演：
+
+```bash
+python scripts/rehearse_migration.py --keep    # --keep 会把副本留下，可以直接当新项目的起点
+```
 
 数据库迁移照样写：`alembic revision --autogenerate -m "..."`，
 流水线会验证"能升级 + 能回滚 + 在 postgres 16 上跑得通"。
@@ -146,6 +155,7 @@ web/src/
 |---|---|---|
 | 改名 | `python scripts/project_env.py check` | `project identity agrees with project.env (12 files checked)` |
 | 后端骨架完好 | `cd backend && pytest tests -q` | 全绿；含 `tests/unit/test_layering.py` |
+| 删干净了没有 | `python scripts/rehearse_migration.py` | 全绿：把示例业务整块删掉后，骨架自己的测试仍然通过（CI 每次推送都跑两侧的半场） |
 | 迁移可逆 | `alembic upgrade head && alembic downgrade base && alembic upgrade head` | 三步都成功 |
 | 前端 | `cd web && npm run lint && npm run typecheck && npm test && npm run build` | 全绿；含 `src/layering.test.ts` 分层守卫与 `src/App.test.tsx` 渲染冒烟 |
 | 服务器 | `bash deploy/bootstrap-server.sh --check` | 全部 ✓ |

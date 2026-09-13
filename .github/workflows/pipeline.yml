@@ -353,6 +353,15 @@ jobs:
         working-directory: backend
         run: pytest tests/integration -q
 
+      # The template's central promise is "a migration is: delete the example
+      # features, edit one registry line". That promise breaks silently the day a
+      # skeleton file or a fixture grows a dependency on the example business, so
+      # it is rehearsed on every push instead of being discovered mid-migration.
+      # (The web half runs in verify-web, which is where node_modules lives.)
+      - name: migration rehearsal (skeleton with no business installed)
+        working-directory: backend
+        run: python ../scripts/rehearse_migration.py --skip-web
+
       # The smoke-image job starts the fake payment provider with a bare `python3`
       # that has none of these dependencies, and a version that imported the app
       # package failed there with ModuleNotFoundError after the whole image had
@@ -429,6 +438,12 @@ jobs:
           grep -q 'src="\./assets/' dist/index.html \
             || { echo "dist/index.html does not use relative asset paths"; cat dist/index.html; exit 1; }
           echo "bundle uses relative asset paths"
+
+      # The same promise the backend job rehearses, on this side: delete the
+      # example features and the shell must still build, lint and pass its own
+      # tests. Backend is skipped here (this job has no pytest dependencies).
+      - name: migration rehearsal (shell with no business installed)
+        run: python3 scripts/rehearse_migration.py --skip-backend
 
       - uses: actions/upload-artifact@v7
         with:

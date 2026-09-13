@@ -232,9 +232,7 @@ def check(values: dict[str, str]) -> list[str]:
     expected_web_name = f"{v['PROJECT_SLUG']}-web"
     package = json.loads(read("web/package.json"))
     if package.get("name") != expected_web_name:
-        problems.append(
-            f"web/package.json: name is {package.get('name')!r}, expected {expected_web_name!r}"
-        )
+        problems.append(f"web/package.json: name is {package.get('name')!r}, expected {expected_web_name!r}")
     lock = json.loads(read("web/package-lock.json"))
     if lock.get("name") != expected_web_name:
         problems.append(

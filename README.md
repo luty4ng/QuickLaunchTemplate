@@ -283,7 +283,8 @@ backend/      FastAPI 应用、alembic 迁移、pytest 测试
   app/features/ 示例业务：todos（待办 + 配额）、billing（Stripe 订阅）
                 骨架**不许**导入它——由 tests/unit/test_layering.py 用 AST 守着
   migrations/   版本化 schema；`alembic upgrade head` 是流水线里独立的一步
-  tests/        单元 + 集成 + 分层守卫（全部离线可跑）
+  tests/        骨架测试：unit/ 与 integration/（离线可跑；全部不 import app.features）
+    */features/ 示例业务的测试——跟着 app/features/ 一起删
 web/          Vite + React + TypeScript SPA（唯一的前端源码）
   src/api/      骨架：request 封装、错误映射、会话、更新桥、API 基址
   src/features/ 示例业务：todos、billing（各自带组件 + 自己的 API 调用）
@@ -293,7 +294,8 @@ desktop/      Electron 外壳 + electron-builder 打包（含自动更新）
 mobile/       Capacitor 配置；android/ 原生工程由 CI 生成，不入库
 deploy/       compose.server.yaml（Traefik 接入）、deploy.sh（服务器侧部署）、
               bootstrap-server.sh（新服务器一键准备）
-scripts/      smoke.py（部署门禁）、fake_stripe.py（支付方替身）、project_env.py、make_feed.py
+scripts/      smoke.py（部署门禁）、fake_stripe.py（支付方替身）、project_env.py、
+              make_feed.py、rehearse_migration.py（删掉示例业务后骨架是否仍自洽）
 Dockerfile    多阶段：构建前端 -> 装 Python 依赖 -> slim 非 root 运行时
 compose.yaml  db + 一次性迁移服务 + app
 MIGRATION.md  迁移到新项目的完整清单（改名 → 服务器 → 换业务 → 验收）
@@ -311,11 +313,16 @@ python scripts/project_env.py bootstrap --repo <owner>/<repo> --domain <域名> 
 
 # 服务器体检（不改任何东西）/ 一键准备
 bash deploy/bootstrap-server.sh --check
+
+# 换业务：删掉示例功能包 + 各改注册表一行，然后让机器确认你没漏
+python scripts/rehearse_migration.py
 ```
 
 业务代码各自集中在一个目录：后端 `backend/app/features/`，前端 `web/src/features/`。
 换项目就是删掉那两个示例功能包、放自己的进去（前端再改注册表一行），
-骨架（认证、会话、健康、更新源、壳层 UI）不用动。
+骨架（认证、会话、健康、更新源、壳层 UI）不用动——`rehearse_migration.py` 在临时副本里
+把示例业务整块删掉，再跑一遍骨架自己的测试；**CI 每次推送都会跑两侧的半场**，
+所以这条承诺不会随着后续开发悄悄失效。
 
 ## 本地运行
 
