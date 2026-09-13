@@ -85,6 +85,9 @@ def create_app() -> FastAPI:
     # Registered before the SPA catch-all below, which would otherwise answer
     # /updates/latest.yml with index.html.
     app.include_router(updates.router)
+    # The installers and block maps live in the same directory; mounted after the
+    # router so the feed keeps its own 404.
+    updates.mount_installers(app)
     _mount_web_client(app, settings.web_dist)
     return app
 

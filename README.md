@@ -131,12 +131,19 @@ Linux 与安卓默认关闭，是因为本项目只服务 Windows 客户端和�
 
 **更新源由应用自己提供**：`GET /updates/latest.yml`。客户端里那个地址写在
 `desktop/app-config.json`（`project_env.py check` 保证它与 `project.env` 的域名一致）。
-为什么不放在 Release 里：下载页上就只会剩安装包一个文件，而 feed 本来也不是给人点的东西。
-发布流程是：`desktop` job 打包 → `release` job 发布安装包 → `update-feed` job 把 feed
-写到服务器并**验证公网真的读得到**（这一步失败，整条发布就失败）。
 
-代价说清楚：feed 里的 URL 指向 GitHub 的 Release 附件，而 blockmap 不再发布，
-所以**更新是整包下载**（约 110 MB），没有增量。
+安装包与它的 `.blockmap` **也由同一个源提供**（`/updates/QuickLaunch-Setup-<v>-x64.exe`），
+这不是随手一放：electron-updater 把块文件地址当成 `安装包地址 + .blockmap`，只有同源才能做
+**增量更新**（只下载变化的块，而不是每次都下 110 MB）。Release 里那份安装包是给人下载的副本，
+服务器上这份才是客户端更新时用的。服务器只保留最近 3 个安装包。
+
+为什么更新源不放 Release 里：那样下载页就会多出 `latest.yml` 与 `blockmap` 两个没人会点的文件；
+现在一次 Release 只有一个安装包，而客户端要的东西一样没少。发布流程是：
+`desktop` job 打包 → `release` job 发布安装包 → `update-feed` job 把 feed + 安装包 + 块文件
+写到服务器，并**在公网地址上逐项验证**：feed 版本号正确、安装包可下载、**服务器支持 Range 请求**
+（不支持就等于没有增量）、块文件存在。任何一项不过，这次发布就判失败。
+
+代价：每次发版 CI 要把安装包（约 110 MB）上传到服务器一次；客户端更新的流量走自己的服务器。
 
 更新路径是**被验证过的**，不是假设：`desktop-self-test` 在 Windows runner 上真启动打包后的应用，
 让它读**线上真实 feed**，并报告自己得出的结论。要专门触发「有更新」分支，用一个比线上更低的版本发布：

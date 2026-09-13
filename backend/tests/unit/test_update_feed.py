@@ -49,16 +49,27 @@ class TestParsingThePackagedFeed:
 
 
 class TestBuildingThePublishedFeed:
+    BASE = "https://example.test/updates"
+
     def test_file_urls_become_absolute(self) -> None:
-        feed = build_feed(PACKAGED, "1.2.3", "owner/name")
-        assert (
-            "url: https://github.com/owner/name/releases/download/v1.2.3/QuickLaunch-Setup-1.2.3-x64.exe"
-            in feed
-        )
+        feed = build_feed(PACKAGED, "1.2.3", self.BASE)
+        assert "url: https://example.test/updates/QuickLaunch-Setup-1.2.3-x64.exe" in feed
+
+    def test_the_installer_sits_where_the_blockmap_is(self) -> None:
+        """electron-updater appends `.blockmap` to this URL: same origin or no delta.
+
+        A URL under `github.com/<...>/releases/download/` would make the client ask
+        GitHub for `<installer>.blockmap`, which is not published there - and every
+        update would silently fall back to downloading all 107 MB.
+        """
+        feed = build_feed(PACKAGED, "1.2.3", self.BASE)
+        url = next(line.split("url:", 1)[1].strip() for line in feed.splitlines() if "url:" in line)
+        assert url.startswith("https://example.test/updates/")
+        assert "github.com" not in url
 
     def test_the_checksum_and_size_are_preserved(self) -> None:
         """Dropping sha512 would make the client trust whatever it downloaded."""
-        feed = build_feed(PACKAGED, "1.2.3", "owner/name")
+        feed = build_feed(PACKAGED, "1.2.3", self.BASE)
         assert (
             "sha512: 1J9nysN9Kutxa6HOjeaNLNZj0x6p92rnEJqWLvmlcclJtGb0y7m4I2PTXn7tbbzG3K0dmf0dKxSeHXKhhmw5nQ=="
             in feed
@@ -66,15 +77,19 @@ class TestBuildingThePublishedFeed:
         assert "size: 111716043" in feed
 
     def test_the_legacy_top_level_shape_is_emitted_too(self) -> None:
-        feed = build_feed(PACKAGED, "1.2.3", "owner/name")
-        assert feed.splitlines()[-2].startswith("path: https://github.com/")
+        feed = build_feed(PACKAGED, "1.2.3", self.BASE)
+        assert feed.splitlines()[-2].startswith("path: https://example.test/updates/")
         assert feed.splitlines()[-1].startswith("sha512: ")
+
+    def test_a_trailing_slash_does_not_double_up(self) -> None:
+        feed = build_feed(PACKAGED, "1.2.3", self.BASE + "/")
+        assert "https://example.test/updates/QuickLaunch-Setup-1.2.3-x64.exe" in feed
 
     def test_a_mismatched_version_is_refused(self) -> None:
         """The feed decides what installed clients compare against."""
         with pytest.raises(SystemExit, match="advertises 1.2.3"):
-            build_feed(PACKAGED, "1.2.4", "owner/name")
+            build_feed(PACKAGED, "1.2.4", self.BASE)
 
     def test_an_empty_feed_is_refused(self) -> None:
         with pytest.raises(SystemExit, match="no files entry"):
-            build_feed("version: 1.2.3\n", "1.2.3", "owner/name")
+            build_feed("version: 1.2.3\n", "1.2.3", self.BASE)

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 import time
 import urllib.error
@@ -377,18 +378,24 @@ def fake_origin(checkout_url: str) -> str:
 
 
 def check_update_feed(base_url: str) -> None:
-    """The desktop update feed, from the outside.
+    """The desktop update path, from the outside.
 
     Installed clients read `/updates/latest.yml` on every launch to decide whether
-    to offer an update. It is served by the application rather than published as a
-    release asset, so this is the only place that proves the whole chain works:
-    file on the server -> mounted into the container -> answered on the public URL.
+    to offer an update, then download the installer it points at - and, to avoid
+    re-downloading 110 MB every time, fetch only the blocks that changed using
+    HTTP range requests against that installer and its `.blockmap`.
+
+    Three things to prove, each of which fails silently on its own:
+
+    * the feed answers and names an absolute installer URL;
+    * that installer is actually downloadable (a feed pointing at a file that was
+      pruned or never published looks fine until a user clicks update);
+    * the server honours range requests (otherwise every update quietly becomes a
+      full download - no error anywhere, updates just get slow).
 
     A 404 is not a failure: a deployment that has never published a desktop
-    release legitimately has no feed (that is what the API answers), and the
-    pipeline's own `update-feed` job is the gate that a *published* release has a
-    good feed. Here we only assert that if the feed answers at all, it answers
-    with something a client can use.
+    release legitimately has no feed. The pipeline's `update-feed` job is the gate
+    that a *published* release has a usable one.
     """
     status, body, _ = Session(base_url).request("GET", "/updates/latest.yml", timeout=15)
     if status == 404:
@@ -401,15 +408,53 @@ def check_update_feed(base_url: str) -> None:
     if status != 200 or not isinstance(body, str):
         record("update feed: readable", False, f"status={status}")
         return
+
     version = next(
         (line.split(":", 1)[1].strip() for line in body.splitlines() if line.startswith("version:")), ""
     )
-    has_url = "url: http" in body
+    installer = next(
+        (line.split("url:", 1)[1].strip() for line in body.splitlines() if line.strip().startswith("- url:")),
+        "",
+    )
     record(
         "update feed: readable and usable",
-        bool(version) and has_url,
-        f"version={version or '(missing)'} absolute_url={has_url}",
+        bool(version) and installer.startswith("http"),
+        f"version={version or '(missing)'} absolute_url={installer.startswith('http')}",
     )
+    if not installer.startswith("http"):
+        return
+
+    # One ranged GET answers both questions: 404 means the feed points at a file
+    # that is not there, 200 means it is there but ranges are ignored (so every
+    # update silently becomes a full download), 206 means incremental updates can
+    # work. A HEAD is deliberately not used: GitHub answers those with a redirect
+    # that curl reports rather than follows, which says nothing about the file.
+    code = _curl_code(["-L", "-o", "/dev/null", "-r", "0-0", installer])
+    record(
+        "update feed: the installer it points at is downloadable",
+        code in ("200", "206"),
+        f"status={code or 'no response'}",
+    )
+    record(
+        "update feed: range requests are honoured (incremental updates)",
+        code == "206",
+        f"status={code or 'no response'} (206 = only changed blocks, 200 = always the whole file)",
+    )
+
+
+def _curl_code(arguments: list[str]) -> str:
+    """The status code of a curl call, or '' when curl is unavailable or failed."""
+    try:
+        result = subprocess.run(
+            ["curl", "-sS", "--max-time", "30", "-w", "%{http_code}", *arguments],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return ""
+    output = result.stdout.strip()
+    return output.splitlines()[-1] if output else ""
 
 
 def main() -> int:

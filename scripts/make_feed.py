@@ -11,19 +11,23 @@ expects to sit in the same place as the binary:
 
 That works when the feed lives inside the release (relative URLs resolve against
 the release's download path). Ours is served from the application, so the URL has
-to be absolute and point back at the release asset:
+to be absolute - and it points at the **same origin the blockmap is on**, because
+electron-updater derives the blockmap URL from it (`<file url>.blockmap`) to fetch
+only the changed bytes. Serving the installer from anywhere else silently turns
+every update back into a full 107 MB download.
 
     files:
-      - url: https://github.com/<owner>/<repo>/releases/download/v1.2.3/QuickLaunch-Setup-1.2.3-x64.exe
+      - url: https://example.com/updates/QuickLaunch-Setup-1.2.3-x64.exe
+        sha512: ...
+        size: 111716043
 
 `sha512` and `size` are copied verbatim - they are what the client verifies the
 download with, and inventing or dropping them would either fail every update or
-silently weaken the check. The blockmap entry is not referenced: it is not
-published, so the client downloads the whole installer, and the updater is told
-not to attempt a differential download.
+silently weaken the check.
 
     python scripts/make_feed.py --input desktop/release/latest.yml \\
-        --version 1.2.3 --repo owner/name --output updates/latest.yml
+        --version 1.2.3 --base-url https://example.com/updates \\
+        --output updates/latest.yml
 """
 
 from __future__ import annotations
@@ -67,8 +71,15 @@ def parse_feed(text: str) -> tuple[str, list[dict[str, str]]]:
     return version, files
 
 
-def build_feed(text: str, version: str, repo: str, base: str = "https://github.com") -> str:
-    """Rewrite the feed so every file URL is absolute."""
+def build_feed(text: str, version: str, base_url: str) -> str:
+    """Rewrite the feed so every file URL is absolute.
+
+    `base_url` is where the installers (and their blockmaps) are served from -
+    normally `<domain>/updates`, the same place this feed is served from. The
+    blockmap URL is not written into the feed: electron-updater appends
+    `.blockmap` to whatever URL is here, which is precisely why the installer has
+    to live on the same origin as the blockmap.
+    """
     advertised, files = parse_feed(text)
     if advertised and advertised != version:
         # The version in the feed decides what installed clients compare against;
@@ -76,13 +87,14 @@ def build_feed(text: str, version: str, repo: str, base: str = "https://github.c
         raise SystemExit(f"::error::the packaged feed advertises {advertised} but this release is {version}")
     if not files:
         raise SystemExit("::error::the input feed has no files entry - nothing to publish")
+    base = base_url.rstrip("/")
     for entry in files:
         name = entry.get("url", "")
         if not name:
             raise SystemExit("::error::the input feed has a file entry without a url")
         if name.startswith(("http://", "https://")):
             continue
-        entry["url"] = f"{base}/{repo}/releases/download/v{version}/{name}"
+        entry["url"] = f"{base}/{name}"
 
     lines = [f"version: {version}", "files:"]
     for entry in files:
@@ -106,7 +118,11 @@ def main() -> int:
     parser.add_argument("--input", required=True, help="the latest.yml electron-builder produced")
     parser.add_argument("--output", required=True, help="where to write the publishable feed")
     parser.add_argument("--version", required=True, help="version being released, without the v")
-    parser.add_argument("--repo", required=True, help="owner/name that hosts the release")
+    parser.add_argument(
+        "--base-url",
+        required=True,
+        help="where the installers are served from, e.g. https://example.com/updates",
+    )
     args = parser.parse_args()
 
     source = Path(args.input)
@@ -115,7 +131,7 @@ def main() -> int:
             f"::error::{source} does not exist - the packaging step did not produce a feed", file=sys.stderr
         )
         return 1
-    feed = build_feed(source.read_text(encoding="utf-8"), args.version, args.repo)
+    feed = build_feed(source.read_text(encoding="utf-8"), args.version, args.base_url)
 
     target = Path(args.output)
     target.parent.mkdir(parents=True, exist_ok=True)

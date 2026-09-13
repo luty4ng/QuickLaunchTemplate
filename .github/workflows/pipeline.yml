@@ -721,6 +721,13 @@ jobs:
       - if: matrix.enabled == 'true' || matrix.target == 'windows'
         uses: actions/checkout@v7
 
+      # The feed's file URLs point at this deployment's own domain (see
+      # scripts/make_feed.py), so the job needs the project identity loaded.
+      - if: matrix.enabled == 'true' || matrix.target == 'windows'
+        name: load the project identity
+        shell: bash
+        run: python scripts/project_env.py export >> "$GITHUB_ENV"
+
       - if: matrix.enabled == 'true' || matrix.target == 'windows'
         uses: actions/setup-node@v7
         with:
@@ -865,15 +872,18 @@ jobs:
         shell: bash
         env:
           VERSION: ${{ needs.versioning.outputs.version }}
-          REPO: ${{ github.repository }}
           SOURCE_FEED: ${{ matrix.target == 'windows' && 'latest.yml' || 'latest-linux.yml' }}
         run: |
           set -euo pipefail
+          # The URL inside the feed must point at the server that serves the
+          # installers (and, by the `.blockmap` suffix electron-updater appends,
+          # the block maps). Pointing it at the GitHub release asset instead would
+          # silently disable incremental updates.
           python scripts/make_feed.py \
             --input "desktop/release/$SOURCE_FEED" \
             --output "updates/$SOURCE_FEED" \
             --version "$VERSION" \
-            --repo "$REPO"
+            --base-url "$SMOKE_URL/updates"
 
       - if: matrix.enabled == 'true' || matrix.target == 'windows'
         uses: actions/upload-artifact@v7
@@ -1270,6 +1280,16 @@ jobs:
           name: update-feed
           path: updates
 
+      # The installer is served from here too, not only attached to the release:
+      # electron-updater fetches the blockmap from `<installer url>.blockmap` and
+      # requests only the changed blocks. Different origin for the binary means no
+      # delta, so the release asset is a copy for humans and this is the one the
+      # updater uses.
+      - uses: actions/download-artifact@v8
+        with:
+          name: desktop-windows
+          path: installers
+
       - if: needs.changes.outputs.publish_linux == 'true'
         uses: actions/download-artifact@v8
         with:
@@ -1292,30 +1312,58 @@ jobs:
           ssh-keygen -F "${{ vars.DEPLOY_HOST }}" -f ~/.ssh/known_hosts >/dev/null \
             || { echo "::error::could not obtain a host key for ${{ vars.DEPLOY_HOST }}"; exit 1; }
 
-      - name: copy the feed to the server
+      - name: copy the feed and the installer to the server
         run: |
           set -euo pipefail
-          ls -l updates
+          ls -lh updates installers
+          echo "uploading $(du -sh installers | cut -f1) of installers ..."
+          start=$(date +%s)
           scp -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o BatchMode=yes \
-            updates/*.yml "${{ vars.DEPLOY_USER }}@${{ vars.DEPLOY_HOST }}:~/$APP_DIR/updates/"
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=8 \
+            updates/*.yml installers/*.exe installers/*.blockmap \
+            "${{ vars.DEPLOY_USER }}@${{ vars.DEPLOY_HOST }}:~/$APP_DIR/updates/"
+          took=$(( $(date +%s) - start ))
+          echo "upload took ${took}s"
 
-      - name: the feed must answer on the public url
+      - name: keep only the recent installers on the server
         run: |
           set -euo pipefail
-          url="$SMOKE_URL/updates/latest.yml"
-          echo "reading $url"
+          # Each release adds ~110 MB; the old ones are still downloadable from
+          # their own GitHub release, so only the recent few are kept here.
+          ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o BatchMode=yes \
+            "${{ vars.DEPLOY_USER }}@${{ vars.DEPLOY_HOST }}" \
+            "cd ~/$APP_DIR/updates && ls -1t *.exe 2>/dev/null | tail -n +4 | xargs -r rm -f && \
+             ls -1t *.blockmap 2>/dev/null | tail -n +4 | xargs -r rm -f && ls -lh"
+
+      - name: the feed and the installer must answer on the public url
+        run: |
+          set -euo pipefail
+          feed_url="$SMOKE_URL/updates/latest.yml"
+          echo "reading $feed_url"
+          body=""
           for attempt in $(seq 1 20); do
-            if body="$(curl -fsS "$url")"; then
-              printf '%s\n' "$body"
-              echo "$body" | grep -q "version: ${{ needs.versioning.outputs.version }}" \
-                || { echo "::error::$url does not advertise ${{ needs.versioning.outputs.version }}"; exit 1; }
-              echo "::notice::the update feed is live and advertises ${{ needs.versioning.outputs.version }}"
-              exit 0
-            fi
+            if body="$(curl -fsS "$feed_url")"; then break; fi
             sleep 3
           done
-          echo "::error::$url did not answer - installed clients cannot see new versions"
-          exit 1
+          [ -n "$body" ] || { echo "::error::$feed_url did not answer - installed clients cannot see new versions"; exit 1; }
+          printf '%s\n' "$body"
+          echo "$body" | grep -q "version: ${{ needs.versioning.outputs.version }}" \
+            || { echo "::error::the feed does not advertise ${{ needs.versioning.outputs.version }}"; exit 1; }
+
+          installer_url="$(printf '%s\n' "$body" | sed -n 's/^ *- url: *//p' | head -1)"
+          echo "installer url from the feed: $installer_url"
+          code="$(curl -sS -o /dev/null -w '%{http_code}' -I "$installer_url")"
+          [ "$code" = "200" ] || { echo "::error::$installer_url answers $code - every update would fail"; exit 1; }
+
+          # Differential download is HTTP range requests against the installer and
+          # its blockmap. If ranges are not honoured, updates silently download the
+          # whole 110 MB - which is exactly what this step exists to catch.
+          range_code="$(curl -sS -o /dev/null -w '%{http_code}' -r 0-99 "$installer_url")"
+          [ "$range_code" = "206" ] || { echo "::error::$installer_url ignores range requests ($range_code) - incremental updates would silently stop working"; exit 1; }
+          blockmap_code="$(curl -sS -o /dev/null -w '%{http_code}' -I "${installer_url}.blockmap")"
+          [ "$blockmap_code" = "200" ] || { echo "::error::${installer_url}.blockmap answers $blockmap_code - no incremental updates"; exit 1; }
+
+          echo "::notice::feed live, installer downloadable, ranges honoured and blockmap present - incremental updates work"
 
   # ---------------------------------------------------------------------
   # 5. Ship it to the server.

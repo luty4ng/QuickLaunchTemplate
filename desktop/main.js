@@ -117,11 +117,10 @@ function setupAutoUpdate() {
   autoUpdater.autoInstallOnAppQuit = true
   if (UPDATE_FEED_URL) {
     // A generic feed: read that latest.yml rather than asking GitHub which release
-    // it considers newest. The blockmap is deliberately not published (a release
-    // carries only the installer), so a differential download would have nothing
-    // to diff against - ask for the whole file instead of a doomed 404 first.
+    // it considers newest. Differential download stays ON: the installer and its
+    // `.blockmap` are served from the same origin as this feed, which is the only
+    // arrangement where electron-updater can fetch just the changed blocks.
     autoUpdater.setFeedURL({ provider: 'generic', url: UPDATE_FEED_URL })
-    autoUpdater.disableDifferentialDownload = true
   }
 
   autoUpdater.on('checking-for-update', () => publishState({ status: 'checking' }))

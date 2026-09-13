@@ -20,7 +20,7 @@
 |---|---|---|---|
 | `QuickLaunch-Setup-<v>-x64.exe` | 107 MB | **必需** | 用户安装和更新装的就是它 |
 | `latest.yml` | 359 B | **必需，但不必在 Release 里** | 已装客户端靠它判断有没有新版本；**读不到它，自动更新就静默失效**（踩过）。现在由应用在 `/updates/latest.yml` 提供 |
-| `*.exe.blockmap` | 115 KB | 可以不要 | 有它只下载变化的块；没有它每次更新全量 107 MB。已确认不要 |
+| `*.exe.blockmap` | 115 KB | **必需，但不必在 Release 里** | 增量更新的前提：客户端拿"安装包地址 + `.blockmap`"去取块信息，所以块文件必须与安装包**同源**。现在两者都放在 `/updates/` 下 |
 | `QuickLaunch-<v>-win.zip` | 146 MB | **已删除** | 免安装版，更新链路上没人用它 |
 | `web-<sha>.zip` | 72.5 KB | **已删除** | 只有"网页端单独托管到别处"时才用得上；镜像里本来就带前端 |
 | `Source code (zip/tar.gz)` | — | **砍不掉** | GitHub 给每个 Release 自动附的源码包，它们不是 asset，无法单独移除 |
@@ -108,18 +108,17 @@ blockmap 是 115 KB，换来的是更新体积从 107 MB 降到几 MB——建�
 
 | 环节 | 变化 |
 |---|---|
-| 应用 | 新增 `GET /updates/latest.yml`，从 `~/<slug>/updates/`（只读挂进容器）读文件 |
-| 客户端 | `desktop/app-config.json` 里写死 feed 地址（`https://<域名>/updates`），运行时可用 `QL_UPDATE_FEED_URL` 覆盖（自检用）；同时关掉差分下载 |
-| 打包 | `desktop` job 用 `scripts/make_feed.py` 把 electron-builder 的 `latest.yml` 改写成**绝对 URL**（指向 Release 里的安装包），作为单独的小产物交给下一步 |
-| 发布 | 新 job `update-feed`：把 feed 写到服务器 `~/<slug>/updates/`，然后**打公网地址验证** feed 存在且版本号正是这次发布的版本——不通过就判发布失败 |
-| 门禁 | 冒烟测试新增一项：`/updates/latest.yml` 可读且含绝对 URL（没发布过桌面版时按 skip 处理） |
+| 应用 | 新增 `GET /updates/latest.yml`（feed）与 `/updates/<安装包|块文件>`（静态、支持 Range），都从 `~/<slug>/updates/`（只读挂进容器）读 |
+| 客户端 | `desktop/app-config.json` 里写死 feed 地址（`https://<域名>/updates`），运行时可用 `QL_UPDATE_FEED_URL` 覆盖（自检用）；**保留差分下载** |
+| 打包 | `desktop` job 用 `scripts/make_feed.py --base-url https://<域名>/updates` 把 electron-builder 的 `latest.yml` 改写成绝对 URL（与块文件同源），作为单独的小产物交给下一步 |
+| 发布 | 新 job `update-feed`：把 feed + 安装包 + 块文件写到服务器 `~/<slug>/updates/`，只保留最近 3 版；然后**打公网地址逐项验证**：feed 版本号、安装包可下载、**Range 返回 206**、块文件存在 |
+| 门禁 | 冒烟新增三项：feed 可读且含绝对 URL、feed 指向的安装包可下载、**Range 生效（206）** |
 
-代价（明确写出来）：**更新变成整包下载**（约 110 MB），没有增量；
-且更新源依赖自己的服务器（GitHub 的可用性换成了自己的可用性）。
-好处是下载页只剩安装包一个文件，客户端要的东西一样没少。
+代价（明确写出来）：**每次发版 CI 要把约 110 MB 的安装包上传到服务器一次**；
+客户端更新流量走自己的服务器（好处是增量后每次通常只有几 MB）；服务器上多存 3 版安装包（约 330 MB）。
 
-> 注意一次性影响：已经装了 **1.2.3 及更早版本**的客户端仍然只会读 GitHub Release 里的 feed，
-> 而那个 feed 不再更新——需要手动装一次 1.2.4；从 1.2.4 起自动更新照常。
+> 一次性影响：装了 **1.2.3 及更早版本**的客户端仍然只认 GitHub Release 里的 feed，
+> 而那个 feed 不再更新——需要手动装一次 1.2.4 或更新版本；之后自动更新（含增量）照常。
 
 ### 第 4 步（可选，未做）：GHCR 推送按需
 

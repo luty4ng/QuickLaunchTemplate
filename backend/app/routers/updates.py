@@ -1,31 +1,35 @@
-"""Serve the desktop update feed from the application itself.
+"""Serve the desktop update feed and the installers it points at.
 
-The feed (`latest.yml`) is what an installed desktop client reads to learn
-whether a newer version exists and where to fetch it. electron-updater's GitHub
-provider looks for that file **among the assets of the newest release**, which is
-why it used to be published there - and why the downloads page carried a YAML
-file next to the installer.
+Installed clients need two things from this project's own domain:
 
-Serving it from here keeps the promise "a release contains exactly one file, the
-installer": the `url` inside the feed points at that release asset (an absolute
-URL), while the feed itself is a ~400 byte file this app hands out. The blockmap
-is not published either, so updates download the full installer; with the feed
-served from a different origin than the binary, differential download has nothing
-to work with anyway.
+* `/updates/latest.yml` - the feed, which says which version exists and where the
+  installer is;
+* the installer itself, plus its `.blockmap` next to it, because electron-updater
+  derives the blockmap URL by appending `.blockmap` to the installer URL and uses
+  HTTP range requests to fetch only the blocks that changed. Serving the installer
+  from anywhere else (a GitHub release asset, say) would make that request a 404
+  and silently turn every update into a full 107 MB download.
 
-    GET /updates/latest.yml     the feed (404 while nothing has been published)
+The files themselves are written by the release pipeline into `~/<slug>/updates/`,
+which `deploy/compose.server.yaml` mounts read-only at `/app/updates`. Nothing in
+the application writes there.
+
+    GET /updates/latest.yml                                  the feed (404 if none)
+    GET /updates/QuickLaunch-Setup-1.2.4-x64.exe             the installer
+    GET /updates/QuickLaunch-Setup-1.2.4-x64.exe.blockmap    its block map
 """
 
 from __future__ import annotations
 
 from fastapi import APIRouter, status
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.config import get_settings
 from app.deps import api_error
 
-# Not in the OpenAPI docs: it is not part of the public API surface, it is a file
-# a desktop client polls.
+# Not in the OpenAPI docs: it is not part of the public API surface, it is what a
+# desktop client polls and downloads.
 router = APIRouter(prefix="/updates", tags=["updates"], include_in_schema=False)
 
 
@@ -40,3 +44,20 @@ async def update_feed() -> FileResponse:
             status.HTTP_404_NOT_FOUND,
         )
     return FileResponse(path, media_type="text/yaml")
+
+
+def mount_installers(app) -> None:
+    """Serve the rest of the updates directory: installers and block maps.
+
+    Mounted *after* the feed route so `/updates/latest.yml` keeps its JSON 404
+    (a client looking for the feed should not get a bare static-file 404 - the two
+    are told apart in the logs). `check_dir=False` because the directory is
+    created by the first deployment; until then every request here is a 404, which
+    is the honest answer.
+    """
+    directory = get_settings().updates_file.parent
+    app.mount(
+        "/updates",
+        StaticFiles(directory=directory, check_dir=False),
+        name="updates",
+    )
