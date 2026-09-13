@@ -228,6 +228,9 @@ CI 与 CD 放在**同一个文件**里用 `needs:` 串联——拆成两个文�
 | `latest.yml`（更新源清单，客户端读它判断有无新版） | < 0.1 MB |
 | `web-c7eb03b.zip`（静态网页包） | 0.1 MB |
 
+> 上表是当时（v1.0.38）的产物；**从 v1.2.3 起只发前三项里的安装包与更新清单**，
+> 免安装 zip 与静态网页包已删除（见 §15.1 与 `report/PIPELINE-REVIEW.md`）。
+
 打开可选目标后（`publish_android` / `publish_linux`），
 [v1.0.39](https://github.com/luty4ng/QuickLaunchTemplate/releases/tag/v1.0.39) 共 9 个，
 额外包含 `app-debug.apk`（4.2 MB）、`QuickLaunch-1.0.39-x86_64.AppImage`（125.5 MB）、
@@ -334,8 +337,9 @@ desktop(windows) 755s、docker 55s、smoke-image 54s。
    把新的公钥放进 `authorized_keys`，其余（compose、Traefik label、迁移独立成步、回滚演练）都不用动。
 3. **加数据库迁移**：写一个新 revision，CI 会自动验证「能升级 + 能回滚 + 真库上跑得通」。
 4. **加一个必须拦截的规则**：加一条测试即可。§5 已经证明这条链路是通的。
-5. **网页端独立托管**：`web-<sha>.zip` 已经在 Release 里，扔到任意静态托管即可，
+5. **网页端独立托管**：`cd web && npm run build`，把 `web/dist` 扔到任意静态托管即可，
    只需把 `VITE_API_BASE` 指向 API 地址，并把该前端源站加进 `CORS_ORIGINS`。
+   （Release 里不再附静态包——镜像里始终带着同一份前端，需要独立托管时自己构建即可。）
 
 ---
 
@@ -478,8 +482,8 @@ STRIPE_WEBHOOK_SECRET=whsec_fake_secret python scripts/fake_stripe.py \
 
 | 目标 | 默认 | 产物 |
 |---|---|---|
-| Windows 桌面端 | **开** | `QuickLaunch-Setup-<version>-x64.exe`、`QuickLaunch-<version>-win.zip`、`latest.yml`、`blockmap` |
-| 网页端 + API | **开** | `ghcr.io/luty4ng/quicklaunchtemplate:sha-<commit>`、`web-<sha>.zip` |
+| Windows 桌面端 | **开** | `QuickLaunch-Setup-<version>-x64.exe`、`latest.yml`、`blockmap` |
+| 网页端 + API | **开** | `ghcr.io/luty4ng/quicklaunchtemplate:sha-<commit>` |
 | Linux 桌面端 | 关 | `*.AppImage`、`*.deb`、`latest-linux.yml` |
 | 安卓端 | 关 | `app-debug.apk` |
 
