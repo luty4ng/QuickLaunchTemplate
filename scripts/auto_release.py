@@ -88,18 +88,27 @@ def head_is_verified(repo: str, token: str, sha: str) -> tuple[bool, str]:
     A green run for an older commit says nothing about this one, so the sha is
     matched exactly. A run still in flight returns False, and the next heartbeat
     will pick it up - which is the point of waking up every hour.
+
+    Every run for that sha is considered, not just the newest: a run can be
+    cancelled (a manual cancel, a superseded push), and looking only at the
+    newest one would then decline forever with no way out.
     """
     runs = call(f"/repos/{repo}/actions/runs?branch=main&event=push&per_page=30", token) or {}
-    for run in runs.get("workflow_runs", []):
+    matching = [
+        run
+        for run in runs.get("workflow_runs", [])
         # Compared by prefix: the API lists full shas, callers may pass short ones.
-        if run["head_sha"][:7] != sha[:7]:
-            continue
-        if run["status"] != "completed":
-            return False, f"the push run for {sha[:7]} is still {run['status']}"
-        if run["conclusion"] == "success":
+        if run["head_sha"][:7] == sha[:7]
+    ]
+    if not matching:
+        return False, f"no push run has been recorded for {sha[:7]} yet"
+    for run in matching:
+        if run["status"] == "completed" and run["conclusion"] == "success":
             return True, f"push run {run['id']} for {sha[:7]} succeeded"
-        return False, f"the push run for {sha[:7]} concluded {run['conclusion']}"
-    return False, f"no push run has been recorded for {sha[:7]} yet"
+    newest = matching[0]
+    if newest["status"] != "completed":
+        return False, f"the push run for {sha[:7]} is still {newest['status']}"
+    return False, f"the push run for {sha[:7]} concluded {newest['conclusion']}"
 
 
 def decide(args: argparse.Namespace) -> int:
