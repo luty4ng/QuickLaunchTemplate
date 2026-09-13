@@ -149,10 +149,11 @@ dry run 会把四道门的判断逐条打印出来（包括"最新 Release 是�
 | 往服务器 `.env` 加/换密钥 | **人** | 密钥不进 CI 是设计，不是没来得及做 |
 | 回滚 | **人** | 刻意不自动回滚：自动回滚会把"部署失败"变成"悄悄退回旧版本"，问题被掩盖。命令是 `APP_IMAGE` 换上一版镜像，或 `deploy.sh <上一个 rev>` |
 | 数据库备份 | **流水线**（本次新增） | 部署时、**迁移之前**自动 `pg_dump`，保留最近 7 份；备份失败就中止部署 |
-| 依赖升级 / 可用性告警 | 未做 | 见 §7 |
+| 手工在服务器上敲 compose 命令 | **人** | 先 `set -a; . ~/quicklaunch/project.env; set +a`：域名等变量来自 `project.env` 而不是 `.env`（后者只放密钥），不 source 的话 `${APP_DOMAIN}` 会是空串 |
 
 备份这一条值得展开：整条部署路径上，**代码能回滚、镜像能切回，只有数据是不可恢复的**。
 所以它被放在迁移之前、失败即停——宁可这次不部署，也不要带着一条不可回滚的迁移往前走。
+线上第一次真实运行留下了两份：`backups/db-*-before-3b19d0b.sql.gz`、`backups/db-*-before-0c4515a.sql.gz`。
 
 ---
 
@@ -175,6 +176,11 @@ python scripts/project_env.py check
    把部署公钥放进 `~/.ssh/authorized_keys`；
 3. **GitHub**：Secret `DEPLOY_SSH_KEY`，Variables `DEPLOY_HOST` / `DEPLOY_USER`；
 4. 推一个 tag（如 `v0.1.0`）——剩下的验证、发布、部署、冒烟都是流水线的事。
+
+> 本模板自己的配置：`AUTO_RELEASE_ENABLED=true`、`AUTO_RELEASE_HOUR=2`、
+> `AUTO_RELEASE_TZ=Asia/Shanghai`、`AUTO_RELEASE_BUMP=patch`，即**每天凌晨 2 点，
+> 如果 main 上有新提交且那次推送已经绿了，就自动发一版**。第一次这样的自动发布
+> （v1.2.2）已经真跑过：它同时暴露并让门禁抓住了 Traefik label 引发的公网 404（§3）。
 
 ---
 
