@@ -87,18 +87,22 @@ python scripts/project_env.py bootstrap --repo owner/name --domain x.y --slug z 
 
 ## 实际发布什么
 
+**一次 Release 只有 3 个文件**——安装包、更新清单、增量块文件。网页端和 API 走容器镜像，
+不往 Release 里塞；免安装 zip 与静态网页包已经去掉（它们不在安装/更新链路上，
+只是让下载页变吵）。GitHub 还会自动附上两个源码包，那两项删不掉。
+
 | 目标 | 产物 | 默认 | 由谁产出 |
 |---|---|---|---|
-| Windows 桌面端 | `QuickLaunch-Setup-<version>-x64.exe`、`QuickLaunch-<version>-win.zip` | **发布** | `desktop` job |
-| 桌面端更新源 | `latest.yml` + `*.blockmap`（已安装客户端读取的更新清单） | **发布** | `desktop` job |
+| Windows 桌面端 | `QuickLaunch-Setup-<version>-x64.exe` | **发布** | `desktop` job |
+| 桌面端更新源 | `latest.yml` + `*.exe.blockmap`（客户端靠前者判断新版，靠后者只下变化的字节） | **发布** | `desktop` job |
 | 网页端 + API | `ghcr.io/luty4ng/quicklaunchtemplate:sha-<commit>`（一个镜像同时提供两者） | **发布** | `docker` job |
-| 网页端（静态包） | `web-<sha>.zip` | **发布** | `release` job |
 | Linux 桌面端 | `*.AppImage`、`*.deb`、`latest-linux.yml` | 关闭 | `desktop` job |
 | 安卓端 | `app-debug.apk`（可直接安装，debug 签名） | 关闭 | `android` job |
 
-> **一次 tag = 全套验证 + 全套产物。** 路径过滤器只用于分支推送省时间；打 tag 时它被显式
+> **一次 tag = 全套验证 + 明确的产物清单。** 路径过滤器只用于分支推送省时间；打 tag 时它被显式
 > 绕过（`changes` job 里的 `scope` 一步），否则一个只改文档的 tag 会「发布一个没跑过测试、
-> 也没冒烟过镜像的版本」——那正是这条管线承诺不会发生的事。
+> 也没冒烟过镜像的版本」。产物则相反，用的是**白名单**而不是通配符：
+> 新出现一个构建输出，不会自动变成用户的下载项。
 
 ### 如何打开可选目标
 

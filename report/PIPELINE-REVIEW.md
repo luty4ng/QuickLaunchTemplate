@@ -81,6 +81,10 @@ blockmap 是 115 KB，换来的是更新体积从 107 MB 降到几 MB——建�
   （`latest.yml` 里本来只登记安装包，这一点已核对过 v1.2.2 的实际内容）。
 * 预期效果：Release 从 5 个产物变 4 个，打包时间略降。
 
+> **已执行（2026-09-14）**：免安装 zip 直接删除（用户确认不需要）。因为 `desktop-self-test`
+> 原来靠这个 zip 解包后启动应用，所以顺带把"可运行的构建产物"改成单独上传
+> `desktop-windows-unpacked`（仅 CI 用、保留 1 天、不进 Release）。
+
 ### 第 2 步：静态网页包改成开关（默认关）
 
 * `release` job 里 `assemble the release bundle` 那一步在打包 `web-<sha>.zip`，
@@ -89,6 +93,9 @@ blockmap 是 115 KB，换来的是更新体积从 107 MB 降到几 MB——建�
 * 影响面：只有"把网页端部署到别处"的场景需要它；镜像里始终带着编译好的前端，
   线上不依赖这个 zip。
 * 说明：它只有 72 KB，砍掉主要是**减少下载页上的困惑**，不是省时间。
+
+> **已执行（2026-09-14）**：直接删除，不留开关。`release` job 不再下载 `web-dist`
+> 产物、不再打 zip；`files:` 同时从通配符改成**白名单**（见下）。
 
 ### 第 3 步（可选）：GHCR 推送按需
 
@@ -106,6 +113,23 @@ blockmap 是 115 KB，换来的是更新体积从 107 MB 降到几 MB——建�
   （外加 GitHub 自动附的 Source code 两个，删不掉）
   线上仍旧自动部署 + 公网冒烟；桌面端仍旧一键自动更新
 ```
+
+另外把 `release` job 的 `files:` 从通配符改成了**白名单**：
+
+```yaml
+files: |
+  dist/desktop/*.exe
+  dist/desktop/*.blockmap
+  dist/desktop/latest.yml
+  dist/linux/*.AppImage
+  dist/linux/*.deb
+  dist/linux/latest-linux.yml
+  dist/android/*.apk
+```
+
+理由：通配符的语义是"构建目录里有什么就发什么"，将来多一个输出（比如又加了某种包）
+会**自动**变成用户的下载项；白名单的语义是"只有这几样是发布物"，多出来的东西
+要么进白名单（有意识的决定），要么就只是 CI 里的中间产物。
 
 ---
 
@@ -182,8 +206,8 @@ blockmap 是 115 KB，换来的是更新体积从 107 MB 降到几 MB——建�
 
 ## 6. 下一步
 
-第 1 步（去掉免安装 zip）改动最小、收益最直接，建议先做。做之前先确认一件事：
-**你还想要"解压即用"的免安装版吗？**
+第 1、2 步已经执行完（2026-09-14，用户确认"不需要免安装 zip，只输出最必要的文件 + 安装 exe"）。
+剩下可选的只有第 3 步（GHCR 推送按需），以及一个待定问题：
 
-* 想要 → 那就把它做成开关（默认关），需要时打开；
-* 不想要 → 直接从 `desktop/package.json` 的 `win.target` 里删掉，CI 与文档同步改。
+**解压即用版以后还要不要？** 现在它被彻底移除了。如果哪天需要，加一个
+`PUBLISH_PORTABLE` 开关（`electron-builder --win zip`）即可，默认关。

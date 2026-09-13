@@ -227,8 +227,9 @@ jobs:
       # a release it silently *trimmed* the release instead. Measured on the first
       # tag-driven release (v1.2.0, a documentation-only commit): the backend and
       # web suites were skipped, the image was never smoke tested, and the release
-      # came out without web-<sha>.zip - a published version that nothing had just
-      # verified, which is the one thing this pipeline promises not to do.
+      # was missing artifacts it was supposed to carry - a published version that
+      # nothing had just verified, which is the one thing this pipeline promises
+      # not to do.
       - id: scope
         env:
           IS_TAG: ${{ github.ref_type == 'tag' }}
@@ -812,7 +813,6 @@ jobs:
           name: ${{ matrix.artifact }}
           path: |
             desktop/release/*.exe
-            desktop/release/*.zip
             desktop/release/*.AppImage
             desktop/release/*.deb
             # latest.yml is the update feed electron-updater reads; the blockmap
@@ -822,6 +822,17 @@ jobs:
             desktop/release/*.blockmap
           if-no-files-found: error
           retention-days: 7
+
+      # The unpacked app, for the self-test job only: it needs something it can
+      # actually start, and the published artifact set is deliberately just the
+      # installer + update feed. Kept for a day because it is ~300 MB.
+      - if: matrix.target == 'windows'
+        uses: actions/upload-artifact@v7
+        with:
+          name: desktop-windows-unpacked
+          path: desktop/release/win-unpacked
+          if-no-files-found: error
+          retention-days: 1
 
       # This job runs on both Windows and Linux, and `ls -lh` is not a PowerShell
       # command - the matrix step needs an explicit shell.
@@ -865,8 +876,8 @@ jobs:
 
       - uses: actions/download-artifact@v8
         with:
-          name: desktop-windows
-          path: dist
+          name: desktop-windows-unpacked
+          path: app
 
       - uses: actions/setup-python@v7
         with:
@@ -903,18 +914,17 @@ jobs:
           echo "feed=$url" >> "$GITHUB_OUTPUT"
           echo "feed under test: ${url:-(none)}"
 
-      - name: unpack the built app
+      - name: check the app we are about to run
         shell: pwsh
         run: |
-          # The zip target is a plain archive of the packaged app directory.
-          # Extracting a self-extracting installer would work too, but it
-          # launches the app as a side effect - not what a CI step wants.
+          # The unpacked build is what the installer would place on disk, without
+          # the installer. The published release carries only the installer and
+          # the update feed, so the runnable copy comes from its own artifact.
           Write-Host "artifact contents:"
-          Get-ChildItem dist | Select-Object Name, Length | Format-Table | Out-String | Write-Host
-          $zip = Get-ChildItem dist -Filter '*.zip' | Select-Object -First 1
-          if (-not $zip) { throw "no desktop zip in the artifact" }
-          Expand-Archive -Path $zip.FullName -DestinationPath "$PWD\app" -Force
-          Get-ChildItem "$PWD\app" | Select-Object -First 10 Name
+          Get-ChildItem app | Select-Object -First 15 Name, Length | Format-Table | Out-String | Write-Host
+          if (-not (Get-ChildItem app -Filter 'QuickLaunch.exe' -Recurse | Select-Object -First 1)) {
+            throw "QuickLaunch.exe is not in the unpacked artifact"
+          }
 
       - name: stub the API the shell will call
         shell: pwsh
@@ -1127,23 +1137,20 @@ jobs:
           name: desktop-linux
           path: dist/linux
 
-      - uses: actions/download-artifact@v8
-        with:
-          name: web-dist
-          path: dist/web
-        continue-on-error: true
-
-      - name: assemble the release bundle
+      # A release carries what a user needs to install and what an installed
+      # client needs to update itself - nothing else. The portable zip and the
+      # static web bundle used to ride along here; both were dead weight on a
+      # downloads page (146 MB and 72 KB respectively), and neither is part of
+      # the update path. `files:` below is an explicit allowlist for the same
+      # reason: a new build output must not silently become a published asset.
+      - name: list what will be published
         run: |
           set -euo pipefail
-          cd dist
-          if [ -f web/index.html ]; then
-            zip -qr "web-${GITHUB_SHA::7}.zip" web
-            rm -rf web
-          else
-            echo "no static web artifact in this run (web/ unchanged); skipping that zip"
-          fi
-          ls -lhR .
+          ls -lhR dist
+          test -f dist/desktop/latest.yml || {
+            echo "::error::latest.yml is missing - installed desktop clients would never update"
+            exit 1
+          }
 
       # electron-updater reads latest.yml out of the newest release. Without it
       # in the release, every installed client silently stops seeing updates.
@@ -1180,26 +1187,35 @@ jobs:
             Desktop build **${{ needs.versioning.outputs.version }}** from `${{ github.sha }}`.
 
             Installed Windows clients update themselves: they read `latest.yml` from this
-            release, download in the background and install on one click.
+            release, download in the background and install on one click. That is why a
+            release holds exactly what installing and updating need, and nothing else.
 
-            | target | artifact |
+            | file | what it is for |
             |---|---|
-            | desktop (Windows) | `QuickLaunch-Setup-${{ needs.versioning.outputs.version }}-x64.exe` installer, `QuickLaunch-${{ needs.versioning.outputs.version }}-win.zip` unpacked |
-            | desktop (update feed) | `latest.yml`, `*.blockmap` - what electron-updater downloads |
-            | web | served by `${{ env.IMAGE }}:sha-${{ github.sha }}` |
-            ${{ needs.changes.outputs.publish_linux == 'true' && '| desktop (Linux) | `*.AppImage`, `*.deb` |' || '' }}
-            ${{ needs.changes.outputs.publish_android == 'true' && '| android | `app-debug.apk` |' || '' }}
+            | `QuickLaunch-Setup-${{ needs.versioning.outputs.version }}-x64.exe` | the installer users run |
+            | `latest.yml` | the version check every installed client performs |
+            | `*.exe.blockmap` | lets an update download only the changed bytes instead of all 107 MB |
+            ${{ needs.changes.outputs.publish_linux == 'true' && '| `*.AppImage`, `*.deb` | Linux packages (switch is on) |' || '' }}
+            ${{ needs.changes.outputs.publish_android == 'true' && '| `app-debug.apk` | Android build (switch is on) |' || '' }}
+
+            The web client and API are not attached here: they ship as the container image
+            `${{ env.IMAGE }}:sha-${{ github.sha }}`.
 
             A client only updates to a version **higher** than the one it runs, so this
             release must keep its version: retagging or lowering it stops updates.
 
             Linux desktop and Android are off by default; turn them on with the
             repository variables `PUBLISH_LINUX` / `PUBLISH_ANDROID`.
+          # An allowlist, not a glob: a new build output must not become a published
+          # asset by accident. Directories (the unpacked app) are deliberately absent.
           files: |
-            dist/desktop/*
-            dist/linux/*
-            dist/android/*
-            dist/*.zip
+            dist/desktop/*.exe
+            dist/desktop/*.blockmap
+            dist/desktop/latest.yml
+            dist/linux/*.AppImage
+            dist/linux/*.deb
+            dist/linux/latest-linux.yml
+            dist/android/*.apk
           fail_on_unmatched_files: false
 
   # ---------------------------------------------------------------------
