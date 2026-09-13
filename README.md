@@ -276,20 +276,41 @@ FastAPI 进程同时提供 `/api/*` 和编译好的 SPA。一个产物、一个�
 ## 仓库结构
 
 ```
+project.env   项目身份的唯一事实来源（名字、slug、仓库、域名、包名；无密钥）
+branding/     品牌资源（图标等）——迁移时整个换掉
 backend/      FastAPI 应用、alembic 迁移、pytest 测试
-  app/          config、security（bcrypt+JWT）、deps、schemas、routers
-  app/billing/  支付网关抽象（真实 Stripe / HTTP / 内存替身）、验签、幂等、档位映射
+  app/          骨架：config、security（bcrypt+JWT）、deps、schemas、routers、db
+  app/features/ 示例业务：todos（待办 + 配额）、billing（Stripe 订阅）
+                骨架**不许**导入它——由 tests/unit/test_layering.py 用 AST 守着
   migrations/   版本化 schema；`alembic upgrade head` 是流水线里独立的一步
-  tests/unit/   纯逻辑，不连数据库（含真实 SDK 的验签测试）
-  tests/integration/  真实 HTTP + 真实数据库（本地 sqlite，CI 里 postgres）
+  tests/        单元 + 集成 + 分层守卫（全部离线可跑）
 web/          Vite + React + TypeScript SPA（唯一的前端源码）
 desktop/      Electron 外壳 + electron-builder 打包（含自动更新）
 mobile/       Capacitor 配置；android/ 原生工程由 CI 生成，不入库
-deploy/       compose.server.yaml（Traefik 接入）、deploy.sh（服务器侧部署脚本）
-scripts/      smoke.py（部署门禁）、fake_stripe.py（支付方替身）、verify_apk.py、gh*.py
+deploy/       compose.server.yaml（Traefik 接入）、deploy.sh（服务器侧部署）、
+              bootstrap-server.sh（新服务器一键准备）
+scripts/      smoke.py（部署门禁）、fake_stripe.py（支付方替身）、project_env.py、make_feed.py
 Dockerfile    多阶段：构建前端 -> 装 Python 依赖 -> slim 非 root 运行时
 compose.yaml  db + 一次性迁移服务 + app
+MIGRATION.md  迁移到新项目的完整清单（改名 → 服务器 → 换业务 → 验收）
 ```
+
+## 迁移到新项目
+
+三条命令改名 + 一条命令准备服务器；剩下四件必须人工的事（DNS、部署公钥、GitHub Secret、
+可选 Stripe）都有明确理由。完整清单见 `MIGRATION.md`：
+
+```bash
+# 一次改掉域名/仓库/镜像名/包名等十余处，然后自检
+python scripts/project_env.py bootstrap --repo <owner>/<repo> --domain <域名> \
+  --name "<显示名>" --slug <短名> --write
+
+# 服务器体检（不改任何东西）/ 一键准备
+bash deploy/bootstrap-server.sh --check
+```
+
+业务代码集中在 `backend/app/features/`：换项目就是删掉那两个示例功能包、放自己的进去，
+骨架（认证、会话、健康、更新源）不用动。
 
 ## 本地运行
 
