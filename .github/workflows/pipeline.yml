@@ -1382,7 +1382,9 @@ jobs:
           AUTO_RELEASE_TZ: ${{ vars.AUTO_RELEASE_TZ || 'Asia/Shanghai' }}
           AUTO_RELEASE_BUMP: ${{ vars.AUTO_RELEASE_BUMP || 'patch' }}
           # A scheduled heartbeat releases for real; a human clicking the dispatch
-          # gets a dry run unless they explicitly turn it off.
+          # gets a dry run unless they explicitly turn it off, and is not bound by
+          # the configured hour (that hour is for the unattended run).
           AUTO_RELEASE_DRY_RUN: ${{ github.event_name == 'schedule' && 'false' || inputs.auto_release_dry_run }}
+          AUTO_RELEASE_IGNORE_HOUR: ${{ github.event_name != 'schedule' }}
         run: |
           python3 scripts/auto_release.py --next "${{ steps.next.outputs.next }}"

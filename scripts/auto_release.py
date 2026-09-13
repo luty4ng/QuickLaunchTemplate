@@ -117,7 +117,11 @@ def decide(args: argparse.Namespace) -> int:
     if not enabled:
         print("decision: no release - AUTO_RELEASE_ENABLED is not 'true'")
         return 0
-    if now.hour != hour:
+    if args.ignore_hour:
+        # A human asking explicitly is not bound by the hour they configured for
+        # the unattended run; the heartbeat still is.
+        print(f"hour gate       : skipped (manual run; the heartbeat releases at {hour:02d})")
+    elif now.hour != hour:
         print(f"decision: no release - this heartbeat is hour {now.hour:02d}, not {hour:02d}")
         return 0
 
@@ -180,6 +184,12 @@ def main() -> int:
         default=(os.environ.get("AUTO_RELEASE_DRY_RUN", "true").lower() == "true"),
         action=argparse.BooleanOptionalAction,
         help="print the decision without dispatching anything",
+    )
+    parser.add_argument(
+        "--ignore-hour",
+        default=(os.environ.get("AUTO_RELEASE_IGNORE_HOUR", "false").lower() == "true"),
+        action=argparse.BooleanOptionalAction,
+        help="skip the configured-hour gate (set for manual runs, not for the heartbeat)",
     )
     parser.add_argument(
         "--next",

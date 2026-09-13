@@ -126,6 +126,12 @@ gh workflow run pipeline --ref main -f auto_release=true -f auto_release_dry_run
 
 dry run 会把四道门的判断逐条打印出来（包括"最新 Release 是哪个、这个提交的 CI 绿没绿"）。
 
+两点差异值得知道：
+
+* **手动触发的运行不受"配置的小时"限制**——那个小时是给无人值守的心跳用的；
+  人明确点了一次，就按人的意思办（脚本会打印 `hour gate: skipped`）。
+* 手动触发的**默认是 dry run**：点一下不会真的发版，要真发得显式关掉它。
+
 ---
 
 ## 5. 运行期
