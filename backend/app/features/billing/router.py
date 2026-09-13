@@ -22,27 +22,26 @@ import json
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, Request, Response, status
-from sqlalchemy import func, select
 
-from app.billing.gateway import BillingGateway, BillingUnavailable, StripeGateway
-from app.billing.http_provider import HttpStripeGateway
-from app.billing.schemas import (
+from app.deps import CurrentUser, SessionDep, api_error
+from app.features.billing.gateway import BillingGateway, BillingUnavailable, StripeGateway
+from app.features.billing.http_provider import HttpStripeGateway
+from app.features.billing.schemas import (
     BillingMeOut,
     CheckoutOut,
     CheckoutRequest,
     PlanOut,
     PortalOut,
-    QuotaOut,
     SyncOut,
 )
-from app.billing.service import process_webhook, reconcile_user
-from app.config import get_settings
-from app.db.models import Todo
-from app.deps import CurrentUser, SessionDep, api_error
+from app.features.billing.service import process_webhook, reconcile_user
+from app.features.billing.settings import get_billing_settings
+from app.features.todos.quota import quota_for, used_todos
+from app.features.todos.settings import get_todo_settings
 from app.schemas import ErrorResponse
 
 router = APIRouter(prefix="/billing", tags=["billing"])
-settings = get_settings()
+settings = get_billing_settings()
 
 PLAN_LABELS = {"plus": "Plus", "pro": "Pro"}
 
@@ -71,21 +70,8 @@ def get_gateway() -> BillingGateway:
 GatewayDep = Annotated[BillingGateway, Depends(get_gateway)]
 
 
-async def used_todos(session: SessionDep, user_id: str) -> int:
-    return int(
-        await session.scalar(select(func.count()).select_from(Todo).where(Todo.user_id == user_id)) or 0
-    )
-
-
-def quota_for(plan: str, used: int) -> QuotaOut:
-    limit = settings.todo_limit_for(plan)
-    return QuotaOut(
-        plan=plan,
-        limit=limit,
-        used=used,
-        remaining=None if limit is None else max(limit - used, 0),
-        can_create=limit is None or used < limit,
-    )
+# 配额（一个用户还能建几条待办）由 todos 功能包负责，这里只是展示：
+# 迁移时若删掉 features/todos/，把 /billing/me 的 quota 字段一并删掉即可。
 
 
 def available_plans() -> list[PlanOut]:
@@ -93,7 +79,7 @@ def available_plans() -> list[PlanOut]:
         PlanOut(
             id="plus",
             name=PLAN_LABELS["plus"],
-            limit=settings.plus_todo_limit,
+            limit=get_todo_settings().plus_todo_limit,
             price_id=settings.stripe_price_plus,
             available=bool(settings.stripe_price_plus),
         ),

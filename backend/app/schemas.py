@@ -1,59 +1,22 @@
-"""Request/response contracts. Every inbound body is validated here."""
+"""骨架的请求/响应契约：认证、错误、健康检查。
+
+业务契约跟着功能包走——待办的模型在 `app/features/todos/schemas.py`，
+计费的在 `app/features/billing/schemas.py`。骨架的 schema 里出现 Todo 字段，
+就说明骨架又开始认识示例业务了（`tests/unit/test_layering.py` 会拦）。
+"""
 
 from __future__ import annotations
 
-from datetime import datetime
-
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 from app.config import get_settings
 
 _settings = get_settings()
 
-MIN_TITLE = 1
-MAX_TITLE = 200
-
-
-def _clean_title(value: str) -> str:
-    """Trim first, then judge length, so "   " is rejected as empty."""
-    cleaned = value.strip()
-    if len(cleaned) < MIN_TITLE:
-        raise ValueError("title must not be blank")
-    if len(cleaned) > MAX_TITLE:
-        raise ValueError(f"title must be at most {MAX_TITLE} characters")
-    return cleaned
-
 
 class Credentials(BaseModel):
     email: EmailStr
     password: str = Field(min_length=_settings.password_min_length, max_length=200)
-
-
-class TodoCreate(BaseModel):
-    title: str
-
-    _check_title = field_validator("title")(_clean_title)
-
-
-class TodoUpdate(BaseModel):
-    # Both optional, but an empty body is not a valid update (the route says so).
-    title: str | None = None
-    done: bool | None = None
-
-    @field_validator("title")
-    @classmethod
-    def _check_optional_title(cls, value: str | None) -> str | None:
-        return None if value is None else _clean_title(value)
-
-
-class TodoOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: str
-    title: str
-    done: bool
-    created_at: datetime
-    updated_at: datetime
 
 
 class UserOut(BaseModel):

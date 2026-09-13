@@ -19,13 +19,13 @@ from pathlib import Path
 from typing import Any
 
 # The core lives with the scripts; make it importable from the app.
-_SCRIPTS = Path(__file__).resolve().parents[3] / "scripts"
+_SCRIPTS = Path(__file__).resolve().parents[4] / "scripts"
 if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
 
 from fake_stripe_core import FakeStripeState, SignatureError  # noqa: E402
 
-from app.billing.gateway import (  # noqa: E402
+from app.features.billing.gateway import (  # noqa: E402
     BillingUnavailable,
     CheckoutSession,
     SubscriptionSnapshot,

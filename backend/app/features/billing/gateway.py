@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
-from app.config import Settings
+from app.features.billing.settings import BillingSettings
 
 
 class BillingUnavailable(RuntimeError):
@@ -216,7 +216,7 @@ def _reject_future_timestamp(signature: str, tolerance: int) -> None:
 class StripeGateway:
     """The real thing. Constructed only when settings carry usable credentials."""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: BillingSettings) -> None:
         if not settings.stripe_secret_key:
             raise BillingUnavailable("STRIPE_SECRET_KEY is not configured")
         if not settings.stripe_webhook_secret:

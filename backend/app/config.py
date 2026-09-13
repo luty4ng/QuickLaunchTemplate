@@ -1,7 +1,12 @@
-"""Application settings.
+"""Application settings — 骨架的设置。
 
 Everything is environment driven so the same image runs in CI, on a laptop and
 in production without a code change. See `.env.example` for the full list.
+
+**业务设置不在这里**：档位额度住在 `app/features/todos/settings.py`，
+Stripe 凭据住在 `app/features/billing/settings.py`。环境变量名一个都没变
+（`FREE_TODO_LIMIT`、`STRIPE_*` 等照旧），所以 `.env` 与 CI 都不用改。
+这条边界由 `tests/unit/test_layering.py` 守着：骨架不许导入功能包。
 """
 
 from __future__ import annotations
@@ -47,60 +52,6 @@ class Settings(BaseSettings):
     # Where the desktop update feed lives. Served by this app at
     # /updates/latest.yml, written by the release pipeline on the server.
     updates_file: Path = REPO_ROOT / "updates" / "latest.yml"
-
-    # --- Plans and quotas -------------------------------------------------
-    # Todo limits per plan. `None` means unlimited; keep it out of the JSON
-    # surface and treat it as "no check" in code.
-    free_todo_limit: int = Field(default=10, ge=0)
-    plus_todo_limit: int = Field(default=200, ge=0)
-
-    # --- Stripe -----------------------------------------------------------
-    # Empty everywhere except the deployment (and never in the repository). The
-    # billing endpoints answer 503 when these are missing rather than pretending
-    # to work, and CI exercises the same code path with an injected fake gateway.
-    stripe_secret_key: str = ""
-    stripe_webhook_secret: str = ""
-    stripe_price_plus: str = ""
-    stripe_price_pro: str = ""
-    # Point the provider at something other than api.stripe.com. Only used to
-    # exercise the real HTTP code path against scripts/fake_stripe.py; empty means
-    # the official API.
-    stripe_api_base: str = ""
-    # Where Stripe sends the browser back after Checkout / the customer portal.
-    # Relative paths are resolved against the request's own origin when unset.
-    stripe_success_path: str = "/?billing=success"
-    stripe_cancel_path: str = "/?billing=cancelled"
-    # Tolerance for webhook signature timestamps. Stripe's default is 300s; the
-    # server's clock must be roughly right or every event is rejected.
-    stripe_webhook_tolerance: int = Field(default=300, ge=30)
-
-    @property
-    def stripe_enabled(self) -> bool:
-        """True only when the API can actually talk to Stripe."""
-        return bool(self.stripe_secret_key and self.stripe_price_plus and self.stripe_price_pro)
-
-    @property
-    def stripe_uses_official_api(self) -> bool:
-        return not self.stripe_api_base
-
-    def price_id_for(self, plan: str) -> str:
-        return {"plus": self.stripe_price_plus, "pro": self.stripe_price_pro}.get(plan, "")
-
-    def plan_for_price(self, price_id: str) -> str | None:
-        """Map a Stripe price back to a plan; None when it is not ours."""
-        if price_id and price_id == self.stripe_price_plus:
-            return "plus"
-        if price_id and price_id == self.stripe_price_pro:
-            return "pro"
-        return None
-
-    def todo_limit_for(self, plan: str) -> int | None:
-        """None means unlimited."""
-        if plan == "plus":
-            return self.plus_todo_limit
-        if plan == "pro":
-            return None
-        return self.free_todo_limit
 
     @property
     def cors_origin_list(self) -> list[str]:

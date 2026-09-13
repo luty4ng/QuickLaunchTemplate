@@ -16,9 +16,10 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
-from app.billing.gateway import snapshot_from_stripe
-from app.billing.service import snapshot_from_event_object
-from app.config import get_settings
+from app.features.billing.gateway import snapshot_from_stripe
+from app.features.billing.service import snapshot_from_event_object
+from app.features.billing.settings import get_billing_settings
+from app.features.todos.settings import get_todo_settings
 
 pytestmark = pytest.mark.unit
 
@@ -172,7 +173,7 @@ class TestEventObjectParsing:
 
 class TestPriceMapping:
     def test_prices_map_to_plans_and_back(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        settings = get_settings()
+        settings = get_billing_settings()
         monkeypatch.setattr(settings, "stripe_price_plus", "price_plus_x", raising=False)
         monkeypatch.setattr(settings, "stripe_price_pro", "price_pro_x", raising=False)
 
@@ -183,11 +184,10 @@ class TestPriceMapping:
         assert settings.plan_for_price("price_someone_elses") is None
 
     def test_quotas_match_the_agreed_tiers(self) -> None:
-        settings = get_settings()
-        assert settings.todo_limit_for("free") == 10
-        assert settings.todo_limit_for("plus") == 200
-        assert settings.todo_limit_for("pro") is None, "pro means unlimited"
+        assert get_todo_settings().todo_limit_for("free") == 10
+        assert get_todo_settings().todo_limit_for("plus") == 200
+        assert get_todo_settings().todo_limit_for("pro") is None, "pro means unlimited"
 
     def test_an_unknown_plan_falls_back_to_the_free_limit(self) -> None:
         """Safer than unlimited: a typo in the database must not remove the cap."""
-        assert get_settings().todo_limit_for("enterprise") == 10
+        assert get_todo_settings().todo_limit_for("enterprise") == 10

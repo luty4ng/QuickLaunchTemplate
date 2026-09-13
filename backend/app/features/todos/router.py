@@ -16,11 +16,11 @@ from __future__ import annotations
 from fastapi import APIRouter, Response, status
 from sqlalchemy import delete, select, update
 
-from app.billing.router import quota_for, used_todos
 from app.db.base import utcnow
-from app.db.models import Todo
 from app.deps import CurrentUser, SessionDep, api_error
-from app.schemas import TodoCreate, TodoOut, TodoUpdate
+from app.features.todos.models import Todo
+from app.features.todos.quota import quota_for, used_todos
+from app.features.todos.schemas import TodoCreate, TodoOut, TodoUpdate
 
 router = APIRouter(prefix="/todos", tags=["todos"])
 

@@ -84,7 +84,7 @@ class TestRealSignatureVerification:
 
     def test_the_gateway_rejects_a_future_timestamp_anyway(self) -> None:
         """The guard the deployment relies on, since the SDK does not provide it."""
-        from app.billing.gateway import _reject_future_timestamp
+        from app.features.billing.gateway import _reject_future_timestamp
 
         ahead = build(PAYLOAD, timestamp=int(time.time()) + 3600)
         with pytest.raises(ValueError, match="future"):
@@ -94,7 +94,7 @@ class TestRealSignatureVerification:
         _reject_future_timestamp(build(PAYLOAD, timestamp=int(time.time()) + 10), TOLERANCE)
 
     def test_a_header_without_a_usable_timestamp_falls_through_to_the_sdk(self) -> None:
-        from app.billing.gateway import _reject_future_timestamp
+        from app.features.billing.gateway import _reject_future_timestamp
 
         # No `t=` at all: the guard stays out of the way so the SDK's error is the
         # one reported, rather than a guess of ours.
@@ -105,8 +105,8 @@ class TestRealSignatureVerification:
         """A test must not pass against a weaker check than production runs."""
         import inspect
 
-        from app.billing.gateway import StripeGateway, verify_signature
-        from app.billing.http_provider import HttpStripeGateway
+        from app.features.billing.gateway import StripeGateway, verify_signature
+        from app.features.billing.http_provider import HttpStripeGateway
 
         for gateway_class in (StripeGateway, HttpStripeGateway):
             source = inspect.getsource(gateway_class.parse_webhook)
@@ -125,7 +125,7 @@ class TestRealSignatureVerification:
         matching the expected signature for payload` while the fake provider
         recorded `-> 500`.
         """
-        from app.billing.gateway import verify_signature
+        from app.features.billing.gateway import verify_signature
 
         for bad in (build(PAYLOAD, secret="whsec_someone_else"), "garbage", "t=123", ""):
             with pytest.raises(ValueError):  # noqa: PT011 - the type is the assertion
@@ -151,23 +151,23 @@ class TestTheFakeProviderSignsWhatTheApplicationVerifies:
     """
 
     def test_the_default_secret_follows_the_environment(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from app.billing.fake import FakeStripeState
+        from app.features.billing.fake import FakeStripeState
 
         monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_set_by_the_environment")
         assert FakeStripeState().webhook_secret == "whsec_set_by_the_environment"
 
     def test_the_fake_and_the_application_agree_without_being_told(self) -> None:
-        from app.billing.fake import FakeStripeState
-        from app.config import get_settings
+        from app.features.billing.fake import FakeStripeState
+        from app.features.billing.settings import get_billing_settings
 
-        assert FakeStripeState().webhook_secret == get_settings().stripe_webhook_secret, (
+        assert FakeStripeState().webhook_secret == get_billing_settings().stripe_webhook_secret, (
             "the provider CI runs and the application it delivers to must read one secret"
         )
 
     def test_an_event_the_fake_signs_verifies_through_the_real_verifier(self) -> None:
         """The pair, exercised end to end with the SDK doing the verification."""
-        from app.billing.fake import FakeStripeState
-        from app.billing.gateway import verify_signature
+        from app.features.billing.fake import FakeStripeState
+        from app.features.billing.gateway import verify_signature
 
         state = FakeStripeState()
         payload = json.dumps(
@@ -184,7 +184,7 @@ class TestEventNormalisation:
     """`normalise_event` is what lets the service ignore the SDK's object types."""
 
     def test_the_sdk_object_normalises_to_the_shape_the_service_reads(self) -> None:
-        from app.billing.gateway import normalise_event
+        from app.features.billing.gateway import normalise_event
 
         event = stripe.Webhook.construct_event(PAYLOAD, build(PAYLOAD), SECRET, tolerance=TOLERANCE)
         normalised = normalise_event(event)
@@ -195,7 +195,7 @@ class TestEventNormalisation:
         assert normalised["object"]["id"] == "sub_1"
 
     def test_a_plain_dict_passes_through(self) -> None:
-        from app.billing.gateway import normalise_event
+        from app.features.billing.gateway import normalise_event
 
         normalised = normalise_event(
             {"id": "evt_2", "type": "invoice.paid", "data": {"object": {"id": "in_1"}}}
@@ -203,7 +203,7 @@ class TestEventNormalisation:
         assert normalised == {"id": "evt_2", "type": "invoice.paid", "object": {"id": "in_1"}}
 
     def test_an_event_without_a_data_wrapper_does_not_raise(self) -> None:
-        from app.billing.gateway import normalise_event
+        from app.features.billing.gateway import normalise_event
 
         normalised = normalise_event({"id": "evt_3", "type": "ping"})
         assert normalised["object"] == {}

@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 
 import pytest
-from app.billing.fake import FakeGateway
+from app.features.billing.fake import FakeGateway
 from fastapi.testclient import TestClient
 
 from tests.conftest import register

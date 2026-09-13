@@ -5,9 +5,10 @@ from __future__ import annotations
 import asyncio
 from logging.config import fileConfig
 
+import app.db.models  # noqa: F401 - 骨架自己的表（users）
+import app.features  # noqa: F401 - 各功能包的模型会挂到 Base.metadata 上
 from alembic import context
 from app.config import get_settings
-from app.db import models  # noqa: F401 - imported for its side effect on Base.metadata
 from app.db.base import Base
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection

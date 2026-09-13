@@ -40,8 +40,8 @@ os.environ["PLUS_TODO_LIMIT"] = "200"
 import asyncio  # noqa: E402
 
 import sqlalchemy as sa  # noqa: E402
-from app.billing.fake import FakeGateway  # noqa: E402
-from app.billing.router import get_gateway  # noqa: E402
+from app.features.billing.fake import FakeGateway  # noqa: E402
+from app.features.billing.router import get_gateway  # noqa: E402
 from app.main import app, run_migrations  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 from sqlalchemy.ext.asyncio import create_async_engine  # noqa: E402

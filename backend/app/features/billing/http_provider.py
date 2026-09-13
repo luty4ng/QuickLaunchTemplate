@@ -18,7 +18,7 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
-from app.billing.gateway import (
+from app.features.billing.gateway import (
     BillingUnavailable,
     CheckoutSession,
     SubscriptionSnapshot,
@@ -26,13 +26,13 @@ from app.billing.gateway import (
     snapshot_from_stripe,
     verify_signature,
 )
-from app.config import Settings
+from app.features.billing.settings import BillingSettings
 
 
 class HttpStripeGateway:
     """Same interface as StripeGateway, over HTTP instead of the SDK."""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: BillingSettings) -> None:
         if not settings.stripe_webhook_secret:
             raise BillingUnavailable("STRIPE_WEBHOOK_SECRET is not configured")
         self._base = settings.stripe_api_base.rstrip("/")

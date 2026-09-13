@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import pytest
 
-# scripts/ is on sys.path because the test bootstrap imports app.billing.fake.
+# scripts/ is on sys.path because the test bootstrap imports app.features.billing.fake.
 from make_feed import build_feed, parse_feed
 
 pytestmark = pytest.mark.unit

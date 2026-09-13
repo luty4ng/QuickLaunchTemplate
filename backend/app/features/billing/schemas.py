@@ -6,16 +6,19 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
+# 配额契约属于 todos（"还能建几条待办"），billing 只是展示它。
+# 这里是**再导出**，不是重新定义——两份定义迟早会分叉。
+from app.features.todos.schemas import QuotaOut
 
-class QuotaOut(BaseModel):
-    """What the UI needs to render "3 / 10 used" and the upgrade prompt."""
-
-    plan: str
-    # None means unlimited.
-    limit: int | None
-    used: int
-    remaining: int | None
-    can_create: bool
+__all__ = [
+    "BillingMeOut",
+    "CheckoutOut",
+    "CheckoutRequest",
+    "PlanOut",
+    "PortalOut",
+    "QuotaOut",
+    "SyncOut",
+]
 
 
 class PlanOut(BaseModel):

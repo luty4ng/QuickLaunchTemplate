@@ -24,9 +24,10 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.billing.gateway import BillingGateway, SubscriptionSnapshot
-from app.config import Settings, get_settings
-from app.db.models import PLAN_FREE, BillingEvent, User
+from app.db.models import User
+from app.features.billing.gateway import BillingGateway, SubscriptionSnapshot
+from app.features.billing.models import PLAN_FREE, BillingEvent
+from app.features.billing.settings import BillingSettings, get_billing_settings
 
 log = logging.getLogger("quicklaunch.billing")
 
@@ -91,7 +92,7 @@ async def _user_by_email(session: AsyncSession, email: str) -> User | None:
     return await session.scalar(select(User).where(User.email == email.strip().lower()))
 
 
-def _plan_for_snapshot(snapshot: SubscriptionSnapshot, settings: Settings, current_plan: str) -> str:
+def _plan_for_snapshot(snapshot: SubscriptionSnapshot, settings: BillingSettings, current_plan: str) -> str:
     """Which plan this subscription grants.
 
     Prefers the price id. If the price is not one of ours - a price rotated in
@@ -107,7 +108,7 @@ def _plan_for_snapshot(snapshot: SubscriptionSnapshot, settings: Settings, curre
     return PLAN_FREE
 
 
-def apply_snapshot(user: User, snapshot: SubscriptionSnapshot, settings: Settings) -> None:
+def apply_snapshot(user: User, snapshot: SubscriptionSnapshot, settings: BillingSettings) -> None:
     """Write a provider snapshot onto the user. Idempotent by construction."""
     user.stripe_subscription_id = snapshot.subscription_id or user.stripe_subscription_id
     user.stripe_customer_id = snapshot.customer_id or user.stripe_customer_id
@@ -146,10 +147,10 @@ async def process_webhook(
     session: AsyncSession,
     gateway: BillingGateway,
     event: dict[str, Any],
-    settings: Settings | None = None,
+    settings: BillingSettings | None = None,
 ) -> WebhookOutcome:
     """Handle one already-verified event. Never raises for a business reason."""
-    settings = settings or get_settings()
+    settings = settings or get_billing_settings()
     event_id = str(event.get("id") or "")
     event_type = str(event.get("type") or "")
     obj = _as_dict(event.get("object"))
@@ -278,7 +279,7 @@ def snapshot_from_event_object(obj: dict[str, Any]) -> SubscriptionSnapshot:
     subscription items, and taking whichever reports a value avoids a silent
     `None`.
     """
-    from app.billing.gateway import _as_datetime  # local import keeps helpers private
+    from app.features.billing.gateway import _as_datetime  # local import keeps helpers private
 
     items = _as_dict(obj.get("items"))
     data = items.get("data") or []
@@ -308,7 +309,7 @@ def snapshot_from_event_object(obj: dict[str, Any]) -> SubscriptionSnapshot:
 
 
 async def reconcile_user(
-    session: AsyncSession, user: User, gateway: BillingGateway, settings: Settings | None = None
+    session: AsyncSession, user: User, gateway: BillingGateway, settings: BillingSettings | None = None
 ) -> SubscriptionSnapshot | None:
     """Ask the provider what this user's subscription really is, and apply it.
 
@@ -316,7 +317,7 @@ async def reconcile_user(
     "I have paid" in the UI and the server checks Stripe directly. It is not a
     substitute for the webhook - it only runs when the user asks.
     """
-    settings = settings or get_settings()
+    settings = settings or get_billing_settings()
     if not user.stripe_subscription_id:
         return None
     snapshot = gateway.get_subscription(user.stripe_subscription_id)

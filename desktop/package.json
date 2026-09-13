@@ -15,14 +15,14 @@
     "url": "https://github.com/luty4ng/QuickLaunchTemplate.git"
   },
   "scripts": {
-    "stage": "node scripts/stage-web.mjs",
+    "stage": "node scripts/stage-web.mjs && node scripts/stage-branding.mjs",
     "stamp": "node scripts/stamp-version.mjs",
     "start": "npm run stage && electron .",
     "pack": "npm run stage && electron-builder --dir",
     "dist": "npm run stage && electron-builder --win --linux",
     "dist:win": "npm run stage && electron-builder --win",
     "dist:linux": "npm run stage && electron-builder --linux",
-    "test": "node --test lib/version.test.js"
+    "test": "node --test lib/version.test.js scripts/stage-branding.test.mjs"
   },
   "build": {
     "appId": "dev.quicklaunch.desktop",

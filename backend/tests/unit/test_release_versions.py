@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-# scripts/ is on sys.path because the test bootstrap imports app.billing.fake,
+# scripts/ is on sys.path because the test bootstrap imports app.features.billing.fake,
 # which puts it there - the same import the app itself uses to reach the shared
 # provider core.
 from check_version import next_version, version_key

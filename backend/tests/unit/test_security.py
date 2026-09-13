@@ -7,7 +7,8 @@ import time
 import jwt
 import pytest
 from app.config import get_settings
-from app.schemas import Credentials, TodoCreate, TodoUpdate
+from app.features.todos.schemas import TodoCreate, TodoUpdate
+from app.schemas import Credentials
 from app.security import (
     create_session_token,
     decode_session_token,
