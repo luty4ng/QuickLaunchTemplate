@@ -344,3 +344,5 @@ docker compose up -d --wait
 - `report/PLAN-deploy-and-stripe.md` —— 上线部署与订阅支付的实施方案（含决策记录与实测数据）。
 - `report/AUTOMATION.md` —— 自动化边界：哪些环节已自动、哪些刻意留给人、为什么，
   以及定时发版与迁移新项目的操作方式。
+- `report/PIPELINE-REVIEW.md` —— 配置与发版梳理：一次 Release 里每个文件是干什么的、
+  哪些能砍（默认只保留安装包 + `latest.yml` + blockmap）、以及精简的三步方案。
