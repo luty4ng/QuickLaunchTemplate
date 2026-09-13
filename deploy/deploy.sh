@@ -22,14 +22,28 @@
 
 set -euo pipefail
 
-APP_DIR="${APP_DIR:-$HOME/quicklaunch}"
-SRC_DIR="$APP_DIR/src"
-KEEP_IMAGES="${2:-3}"
-IMAGE_NAME="quicklaunch"
-COMPOSE=(docker compose -f compose.yaml -f compose.server.yaml)
-
 log()  { printf '\n=== %s ===\n' "$*"; }
 fail() { printf '\n!!! %s\n' "$*" >&2; exit 1; }
+
+# 项目标识（域名、仓库、镜像名、目录名）只有一个来源：仓库根的 project.env。
+# CI 每次部署都会把 deploy.sh 和 project.env 一起同步到 ~/<slug>/，所以脚本
+# 总是躺在自己的项目目录里。这里**不写默认值**是有意的——默认值等于第二份
+# 事实来源，而漏改的故障方式各不相同：漏改仓库地址是部署失败（还算好），
+# 漏改 desktop 的 publish.owner 则是自动更新**静默失效**。
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+APP_DIR="${APP_DIR:-$SELF_DIR}"
+[ -f "$APP_DIR/project.env" ] || fail "缺少 $APP_DIR/project.env —— 它由 CI 同步，也可从仓库根复制一份"
+set -a
+# shellcheck disable=SC1091  # 部署目录里的文件，不在仓库的固定路径上
+. "$APP_DIR/project.env"
+set +a
+
+KEEP_IMAGES="${2:-3}"
+KEEP_BACKUPS="${KEEP_BACKUPS:-7}"
+IMAGE_NAME="$PROJECT_SLUG"
+REPO_SLUG="$REPO_OWNER/$REPO_NAME"
+SRC_DIR="$APP_DIR/src"
+COMPOSE=(docker compose -f compose.yaml -f compose.server.yaml)
 
 GIT_REF="${1:-}"
 [ -n "$GIT_REF" ] || fail "用法: $0 <git-ref> [保留镜像数]"
@@ -61,8 +75,8 @@ grep -qE '^JWT_SECRET=.{32,}$' .env || fail ".env 里的 JWT_SECRET 短于 32 �
 # ---------------------------------------------------------------------------
 log "获取源码（$GIT_REF）"
 
-REPO_URL="https://github.com/luty4ng/QuickLaunchTemplate.git"
-REPO_SLUG="luty4ng/QuickLaunchTemplate"
+# REPO_SLUG 来自 project.env（见文件头）；URL 由它派生，避免第二份事实来源。
+REPO_URL="https://github.com/${REPO_SLUG}.git"
 GIT_NET=(-c http.version=HTTP/1.1 -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=30)
 SOURCE_METHOD=""
 
@@ -145,6 +159,39 @@ log "启动数据库并等待健康"
 db_state="$(docker inspect --format '{{.State.Health.Status}}' "$("${COMPOSE[@]}" ps -q db)")"
 printf 'db 健康状态: %s\n' "$db_state"
 [ "$db_state" = "healthy" ] || fail "数据库未达到 healthy"
+
+# ---------------------------------------------------------------------------
+# 4a. 迁移之前先备份数据库
+#
+#     这是整条部署路径上唯一"不可恢复"的一步：代码能回滚、镜像能切回，
+#     但一条写错数据的迁移没有备份就是真的回不来。备份在**迁移之前**做，
+#     失败就停（宁可这次不部署，也不要带着不可回滚的迁移往前走）。
+#
+#     刻意保持土办法：pg_dump | gzip 落到同机目录、保留最近 N 份。
+#     它挡得住"迁移写坏了数据"，挡不住"整台机器没了"——异地备份是另一件事，
+#     已在报告的已知限制里写明。
+# ---------------------------------------------------------------------------
+log "备份数据库（迁移前）"
+BACKUP_DIR="$APP_DIR/backups"
+mkdir -p "$BACKUP_DIR"
+# 用 .env 里的库名/用户名（compose 读的就是它），读不到才退回项目 slug。
+pg_user="$(sed -n 's/^POSTGRES_USER=//p' .env | head -1)"
+pg_db="$(sed -n 's/^POSTGRES_DB=//p' .env | head -1)"
+backup_file="$BACKUP_DIR/db-$(date +%Y%m%d-%H%M%S)-before-${REV}.sql.gz"
+if "${COMPOSE[@]}" exec -T db pg_dump -U "${pg_user:-$PROJECT_SLUG}" -d "${pg_db:-$PROJECT_SLUG}" \
+     | gzip > "$backup_file"; then
+  printf '备份完成: %s (%s)\n' "$backup_file" "$(du -h "$backup_file" | cut -f1)"
+else
+  rm -f "$backup_file"
+  fail "数据库备份失败 —— 迁移前必须有可用备份，本次部署中止"
+fi
+
+# 只保留最近 N 份，避免把磁盘吃满（磁盘满会让部署和数据库一起挂）。
+mapfile -t stale < <(ls -1t "$BACKUP_DIR"/db-*.sql.gz 2>/dev/null | tail -n "+$((KEEP_BACKUPS + 1))")
+for old_backup in "${stale[@]:-}"; do
+  [ -n "$old_backup" ] || continue
+  rm -f "$old_backup" && printf '  删除旧备份 %s\n' "$(basename "$old_backup")"
+done
 
 # ---------------------------------------------------------------------------
 # 5. 迁移：独立一步，失败即停

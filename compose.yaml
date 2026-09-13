@@ -9,7 +9,11 @@
 #   * the app image is pulled by tag, and CD overrides `APP_IMAGE` with the
 #     exact sha- tag it just built, which is also the rollback anchor.
 
-name: quicklaunch
+# The project name shows up in container/volume names, so it comes from
+# project.env (deploy.sh exports it) rather than being written twice. The
+# fallback is checked against project.env by `scripts/project_env.py check`,
+# because compose needs *some* value when a human runs it by hand.
+name: ${COMPOSE_PROJECT_NAME:-quicklaunch}
 
 services:
   db:

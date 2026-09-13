@@ -6,6 +6,9 @@
 #
 # 用法：docker compose -f compose.yaml -f compose.server.yaml up -d
 # 注意：不要加 -v，那会删掉 Postgres 数据卷。
+#
+# 域名与项目名来自 project.env（deploy.sh 会把它 export 出来），不写死在这里：
+# 换项目时只改 project.env，Traefik 的 Host 规则和路由名会自动跟着变。
 
 services:
   app:
@@ -17,10 +20,10 @@ services:
     labels:
       traefik.enable: "true"
       traefik.docker.network: traefik-net
-      traefik.http.routers.quicklaunch.rule: Host(`quicklaunch.luty.tech`)
-      traefik.http.routers.quicklaunch.entrypoints: websecure
-      traefik.http.routers.quicklaunch.tls.certresolver: letsencrypt
-      traefik.http.services.quicklaunch.loadbalancer.server.port: "8000"
+      traefik.http.routers.${COMPOSE_PROJECT_NAME:-quicklaunch}.rule: Host(`${APP_DOMAIN}`, `${APP_DOMAIN}`)
+      traefik.http.routers.${COMPOSE_PROJECT_NAME:-quicklaunch}.entrypoints: websecure
+      traefik.http.routers.${COMPOSE_PROJECT_NAME:-quicklaunch}.tls.certresolver: letsencrypt
+      traefik.http.services.${COMPOSE_PROJECT_NAME:-quicklaunch}.loadbalancer.server.port: "8000"
 
 networks:
   traefik-net:

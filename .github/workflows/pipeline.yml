@@ -11,6 +11,14 @@ on:
     branches: ['**']
     tags: ['v*']
   pull_request:
+  # Hourly heartbeat, not a fixed release time. GitHub cron cannot read a
+  # repository variable, so "release at 02:00" is implemented as: wake up every
+  # hour, and let the `auto-release` job decide whether this is the configured
+  # hour (AUTO_RELEASE_HOUR, in AUTO_RELEASE_TZ) and whether there is anything
+  # new to release. That is what makes the time configurable without editing this
+  # file - see report/AUTOMATION.md.
+  schedule:
+    - cron: '0 * * * *'
   workflow_dispatch:
     inputs:
       version:
@@ -26,6 +34,21 @@ on:
           Leave empty for a normal tag-driven deployment.
         required: false
         type: string
+      auto_release:
+        description: >-
+          Run the automatic-release decision now instead of waiting for the
+          hourly heartbeat. Publishing still requires the gates in
+          report/AUTOMATION.md (enabled, configured hour, new commits, green CI).
+        required: false
+        type: boolean
+        default: false
+      auto_release_dry_run:
+        description: >-
+          With auto_release: only print what would be released, publish nothing.
+          Defaults to true so a click cannot publish by accident.
+        required: false
+        type: boolean
+        default: true
       draft:
         description: >-
           Publish this build as a draft release. Use together with a low version
@@ -54,7 +77,10 @@ permissions:
   contents: read
 
 concurrency:
-  group: pipeline-${{ github.ref }}
+  # `github.event_name` is part of the group on purpose. The hourly heartbeat runs
+  # on the same ref as a push, so without it a heartbeat would cancel an
+  # in-flight verification of the commit it is about to decide on.
+  group: pipeline-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
 env:
@@ -116,7 +142,13 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
       # Only for the numeric part: 1.0.10 must beat 1.0.9.
-      - if: github.ref_type == 'tag'
+      #
+      # Anything that publishes has to clear this bar - a tag, or a dispatch that
+      # names a version (which is how the automatic release works). The one
+      # exception is the documented rehearsal: a low version published as a
+      # DRAFT, which exists precisely to test the "an update is available" path
+      # and never reaches the feed.
+      - if: github.ref_type == 'tag' || (inputs.version != '' && inputs.draft != true)
         name: the tag must be newer than every published release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -222,6 +254,14 @@ jobs:
             echo "deployable=$deployable"
           } >> "$GITHUB_OUTPUT"
           echo "scope: backend=$backend web=$web deployable=$deployable"
+
+      # Renaming a project means touching a dozen files, and the failure modes
+      # differ wildly: a stale `REPO_SLUG` in deploy.sh fails the deployment
+      # loudly, while a stale electron-builder `publish.owner` makes desktop
+      # auto-update stop silently. project.env is the source of truth; this
+      # checks that nothing drifted from it. Cheap, so it runs on every push.
+      - name: project identity agrees with project.env
+        run: python3 scripts/project_env.py check
 
   # ---------------------------------------------------------------------
   # 1. CI - the gates. Nothing ships unless these are green.
@@ -1174,7 +1214,8 @@ jobs:
   #    pull instead - see deploy/deploy.sh for the measurements.
   #
   #    The acceptance criterion is the public URL answering, not the container
-  #    starting: scripts/smoke.py runs against https://quicklaunch.luty.tech.
+  #    starting: scripts/smoke.py runs against https://$APP_DOMAIN (from
+  #    project.env, so a renamed project cannot smoke the old site).
   # ---------------------------------------------------------------------
   deploy-server:
     name: cd / deploy to luty-server
@@ -1197,6 +1238,12 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
+      # The domain and the deploy directory are not written into this file: they
+      # come from project.env, so renaming a project cannot leave a deployment
+      # half-pointed at the old one.
+      - name: load the project identity
+        run: python3 scripts/project_env.py export >> "$GITHUB_ENV"
+
       - name: decide which ref to deploy
         id: ref
         env:
@@ -1207,6 +1254,7 @@ jobs:
           ref="${INPUT_REF:-$REF_NAME}"
           echo "deploying ref: $ref"
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "project: $REPO_SLUG -> $APP_DIR/ on $APP_DOMAIN"
 
       - name: install the deploy key
         env:
@@ -1241,11 +1289,12 @@ jobs:
         run: |
           set -euo pipefail
           target="${{ vars.DEPLOY_USER }}@${{ vars.DEPLOY_HOST }}"
-          # compose.yaml and the overlay are versioned with the code; .env is NOT
-          # sent and never overwritten - the secrets live only on the server.
+          # compose.yaml, the overlay, the deploy script and the project identity
+          # are versioned with the code; .env is NOT sent and never overwritten -
+          # the secrets live only on the server.
           scp -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o BatchMode=yes \
-            compose.yaml deploy/compose.server.yaml deploy/deploy.sh \
-            "$target:~/quicklaunch/"
+            compose.yaml deploy/compose.server.yaml deploy/deploy.sh project.env \
+            "$target:~/$APP_DIR/"
 
       - name: deploy
         env:
@@ -1254,14 +1303,14 @@ jobs:
           set -euo pipefail
           ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o BatchMode=yes \
               "${{ vars.DEPLOY_USER }}@${{ vars.DEPLOY_HOST }}" \
-              "chmod +x ~/quicklaunch/deploy.sh && ~/quicklaunch/deploy.sh '${REF}' 3"
+              "chmod +x ~/$APP_DIR/deploy.sh && ~/$APP_DIR/deploy.sh '${REF}' 3"
 
       # The gate that matters: the deployment is only done when the public URL
       # answers and the whole API flow works through it.
       - name: smoke test the public URL
         run: |
           python3 scripts/smoke.py \
-            --base-url "https://quicklaunch.luty.tech" \
+            --base-url "$SMOKE_URL" \
             --health-budget-ms 8000
 
       - name: report
@@ -1273,6 +1322,67 @@ jobs:
             echo "| | |"
             echo "|---|---|"
             echo "| ref | \`${{ steps.ref.outputs.ref }}\` |"
-            echo "| url | https://quicklaunch.luty.tech |"
+            echo "| url | $SMOKE_URL |"
             echo "| smoke | ${{ job.status }} |"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------
+  # 6. The scheduled release decision.
+  #
+  #    Tagging by hand stays the normal way to ship: a tag is still what a human
+  #    chooses, and this job never moves an existing tag. What the schedule adds
+  #    is "release at a configured hour, if there is anything to release and the
+  #    commit is verified". GitHub cannot express a cron that reads a repository
+  #    variable, so the workflow wakes up hourly and
+  #    `scripts/auto_release.py` decides whether this is the configured hour.
+  #
+  #    Configuration is entirely repository variables - no file to edit:
+  #      AUTO_RELEASE_ENABLED=true       (default false: the whole thing is off)
+  #      AUTO_RELEASE_HOUR=2             (default 2)
+  #      AUTO_RELEASE_TZ=Asia/Shanghai   (default Asia/Shanghai)
+  #      AUTO_RELEASE_BUMP=patch         (default patch)
+  #
+  #    When it fires it dispatches *this* workflow with a version, so the release
+  #    job creates the tag and there is still exactly one release path.
+  # ---------------------------------------------------------------------
+  auto-release:
+    name: auto / decide whether to release
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || inputs.auto_release
+    permissions:
+      contents: read
+      actions: write # to dispatch the pipeline
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: load the project identity
+        run: python3 scripts/project_env.py export >> "$GITHUB_ENV"
+
+      - name: work out the next version
+        id: next
+        if: vars.AUTO_RELEASE_ENABLED == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BUMP: ${{ vars.AUTO_RELEASE_BUMP || 'patch' }}
+        run: |
+          set -euo pipefail
+          version="$(python3 scripts/check_version.py --next "$BUMP" --repo "$REPO")"
+          echo "next=$version" >> "$GITHUB_OUTPUT"
+          echo "next version: $version"
+
+      - name: decide, and release if this is the hour
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          GITHUB_SHA: ${{ github.sha }}
+          AUTO_RELEASE_ENABLED: ${{ vars.AUTO_RELEASE_ENABLED == 'true' }}
+          AUTO_RELEASE_HOUR: ${{ vars.AUTO_RELEASE_HOUR || '2' }}
+          AUTO_RELEASE_TZ: ${{ vars.AUTO_RELEASE_TZ || 'Asia/Shanghai' }}
+          AUTO_RELEASE_BUMP: ${{ vars.AUTO_RELEASE_BUMP || 'patch' }}
+          # A scheduled heartbeat releases for real; a human clicking the dispatch
+          # gets a dry run unless they explicitly turn it off.
+          AUTO_RELEASE_DRY_RUN: ${{ github.event_name == 'schedule' && 'false' || inputs.auto_release_dry_run }}
+        run: |
+          python3 scripts/auto_release.py --next "${{ steps.next.outputs.next }}"

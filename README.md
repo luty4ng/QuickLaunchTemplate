@@ -50,10 +50,40 @@
 |---|---|
 | `git push` 到任意分支 | 验证 + 构建镜像 + 在 runner 上起真实栈冒烟。不发布、不部署 |
 | `git push origin v1.2.0` | 上面全部 + 打包客户端 + 发布 Release + 部署到线上 + 公网冒烟 |
+| 到点自动发版（默认关闭） | 每天配置的时间（默认 02:00）自动判断"有新版可发吗"，有就自动发+部署 |
 | 手动触发 | `version`/`draft` 可演练「有更新可用」；`deploy_ref` 只部署不发版；安卓/Linux 开关 |
 
-**版本门禁**：tag 必须严格大于已发布的最高版本（`scripts/check_version.py`），否则流水线在
+**版本门禁**：要发布的版本必须严格大于已发布的最高版本（`scripts/check_version.py`），否则流水线在
 `versioning` 这一步就停下。桌面端只接受比当前更高的版本，所以重复或回退的版本号没有意义。
+
+### 定时自动发版（可配置，默认关闭）
+
+```bash
+gh variable set AUTO_RELEASE_ENABLED --body true      # 总开关
+gh variable set AUTO_RELEASE_HOUR    --body 2         # 几点发（默认凌晨 2 点）
+gh variable set AUTO_RELEASE_TZ      --body Asia/Shanghai
+gh variable set AUTO_RELEASE_BUMP    --body patch     # patch / minor / major
+```
+
+四道门全过才会发：开关打开、到了配置的小时、main 上有新提交、**该提交的 CI 已经绿了**。
+它派发的是同一条流水线（带版本号），所以自动发版与手动 tag 走完全相同的发布路径。
+想先看它会不会发：`gh workflow run pipeline -f auto_release=true`（默认 dry run，不会真发）。
+
+## 项目标识只写一处（迁移到新项目时）
+
+域名、仓库名、镜像名、包名不再散落在 workflow / compose / 脚本 / `package.json` 里，
+而是集中在 `project.env`；能读环境变量的地方从它派生，读不到的地方由 CI 每次校验一致性：
+
+```bash
+python scripts/project_env.py show      # 解析后的全部值
+python scripts/project_env.py check     # 有没有漂移（CI 每次都跑）
+python scripts/project_env.py bootstrap --repo owner/name --domain x.y --slug z --write
+```
+
+漏改的后果并不均等——漏改部署脚本里的仓库地址会直接失败（还算好），
+漏改 electron-builder 的 `publish.owner` 会让**桌面端自动更新静默失效**。
+所以 `check` 把这类不一致变成一次红色的 CI，而不是几个月后"用户怎么收不到更新"。
+剩下必须人做的四件事，`bootstrap` 会在最后打印出来。
 
 ## 实际发布什么
 
@@ -312,3 +342,5 @@ docker compose up -d --wait
 - `report/REPORT.md` —— 交付报告：做了什么、管线如何运作、实测耗时、真实运行证据、
   与 DESIGN.md 的逐条对照、已知限制、以及自动更新与发布开关的说明。
 - `report/PLAN-deploy-and-stripe.md` —— 上线部署与订阅支付的实施方案（含决策记录与实测数据）。
+- `report/AUTOMATION.md` —— 自动化边界：哪些环节已自动、哪些刻意留给人、为什么，
+  以及定时发版与迁移新项目的操作方式。
