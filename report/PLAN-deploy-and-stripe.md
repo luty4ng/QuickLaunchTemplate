@@ -423,7 +423,7 @@ networks:
 | 项 | 结果 |
 |---|---|
 | Release | `v1.1.0`（非 draft），含安装包 + zip + blockmap + **latest.yml** |
-| 服务器运行版本 | `quicklaunch:0970e6d`，**与 tag 指向的提交一致** |
+| 服务器运行版本 | `quicklaunch:0970e6d`，**与 tag 指向的提交一致**（当时；线上随后推进到 `v1.2.1` / `quicklaunch:737aa07`，见报告 §13.5） |
 | 容器 | app healthy、db healthy（数据卷未重建，数据保留） |
 | 公网冒烟 | **17/17 通过**（含注册/登录/增删改查/越权隔离） |
 | 其他服务 | 未受影响 |

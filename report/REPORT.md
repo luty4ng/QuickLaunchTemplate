@@ -286,7 +286,7 @@ CI 与 CD 放在**同一个文件**里用 `needs:` 串联——拆成两个文�
 | `main` 产出镜像，两个 tag 都在 GHCR | ✅ | `ghcr.io/luty4ng/quicklaunchtemplate`：`sha-<commit>` + `latest`，公开 |
 | 镜像启动后 `/api/health` 返回 200 且 < 1s | ✅ | 20–28 ms；并且 Docker 自身 HEALTHCHECK 也报 healthy |
 | 冒烟用例在部署后的真实地址上通过 | ✅ | **28/28**（CI 临时栈，含支付链路）/ **23/23**（公网 `https://quicklaunch.luty.tech`，未配支付） |
-| 用上一个 `sha-` tag 重新部署，服务恢复正常 | ✅ | 回滚演练：`sha-3cd811b` 重新部署后通过，CI 输出 `::notice::rollback rehearsal passed`；真实回滚锚点 `quicklaunch:0970e6d` 也仍在服务器上 |
+| 用上一个 `sha-` tag 重新部署，服务恢复正常 | ✅ | CI 里的回滚演练：`sha-<上一个提交>` 重新部署后通过，输出 `::notice::rollback rehearsal passed`。**需要说明**：这次演练跑在 runner 的临时栈上（验证制品与 compose 机制没问题），**服务器侧的真回滚命令还没在线上演练过**；服务器上的回滚锚点是上一版镜像 `quicklaunch:62bb66b`（保留最近 3 个） |
 
 ---
 
