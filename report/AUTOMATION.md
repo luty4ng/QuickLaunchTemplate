@@ -78,6 +78,14 @@ scripts/project_env.py bootstrap --repo owner/name --domain x.y --slug z --write
 workflow 的 `env:` 块）保持写死，但**由 `check` 保证与 `project.env` 一致**——
 这是刻意的取舍：与其为了"全动态"引入构建期改文件的魔法，不如让不一致直接报错。
 
+**这条边界踩过一次**：第一版把 Traefik 的 label 键也写成了 `${COMPOSE_PROJECT_NAME:-...}`，
+以为 compose 会插值——它只插值 label 的**值**，键会原样保留。于是路由名变成了字面量
+`${COMPOSE_PROJECT_NAME:-quicklaunch}`；同一版里我又把规则写成 `Host(\`a\`, \`a\`)`，
+而 Traefik v3 的 `Host()` **只接受一个参数**，两条叠加的结果是路由根本没建起来、公网 404。
+值得注意的是**它是被门禁抓到的**：部署本身成功（容器 healthy），是部署后的公网冒烟
+把这次发布判成失败。修法：label 键用字面量、由 `check` 校验它等于 slug；
+`Host()` 只留一个参数。
+
 `bootstrap` 默认是 dry run，`--write` 才落盘，落盘后立刻自检；它还会打印剩下需要人做的 4 件事。
 
 ---

@@ -7,8 +7,16 @@
 # 用法：docker compose -f compose.yaml -f compose.server.yaml up -d
 # 注意：不要加 -v，那会删掉 Postgres 数据卷。
 #
-# 域名与项目名来自 project.env（deploy.sh 会把它 export 出来），不写死在这里：
-# 换项目时只改 project.env，Traefik 的 Host 规则和路由名会自动跟着变。
+# 域名来自 project.env（deploy.sh 会 export 出来），不写死在这里：
+# 换项目时只改 project.env，Traefik 的 Host 规则会自动跟着变。
+#
+# 两处关于 Traefik 的细节都是踩过的，别改回去：
+#   * **路由名不插值**——compose 只插值 label 的值，不插值 label 的键；
+#     写成 `${...}` 会原样变成一个叫 "${...}" 的路由。所以这里是字面量，
+#     由 scripts/project_env.py check 保证它与 project.env 的 slug 一致。
+#   * **`Host()` 只接受一个参数**——写成 `Host(\`a\`, \`a\`)` 会让 Traefik 直接报
+#     "unexpected number of parameters; got 2"，路由建不起来，公网变 404。
+#     这个错是部署后的公网冒烟抓出来的：部署本身成功了，是门禁把它拦下的。
 
 services:
   app:
@@ -20,10 +28,10 @@ services:
     labels:
       traefik.enable: "true"
       traefik.docker.network: traefik-net
-      traefik.http.routers.${COMPOSE_PROJECT_NAME:-quicklaunch}.rule: Host(`${APP_DOMAIN}`, `${APP_DOMAIN}`)
-      traefik.http.routers.${COMPOSE_PROJECT_NAME:-quicklaunch}.entrypoints: websecure
-      traefik.http.routers.${COMPOSE_PROJECT_NAME:-quicklaunch}.tls.certresolver: letsencrypt
-      traefik.http.services.${COMPOSE_PROJECT_NAME:-quicklaunch}.loadbalancer.server.port: "8000"
+      traefik.http.routers.quicklaunch.rule: Host(`${APP_DOMAIN}`)
+      traefik.http.routers.quicklaunch.entrypoints: websecure
+      traefik.http.routers.quicklaunch.tls.certresolver: letsencrypt
+      traefik.http.services.quicklaunch.loadbalancer.server.port: "8000"
 
 networks:
   traefik-net:

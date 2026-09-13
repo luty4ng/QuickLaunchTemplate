@@ -153,8 +153,15 @@ def check(values: dict[str, str]) -> list[str]:
     )
     require(".env.example", f"APP_DOMAIN={v['APP_DOMAIN']}", "the server overlay needs the domain")
 
+    # Traefik labels: the domain is interpolated, but label *keys* are not - so
+    # the router name is a literal that has to match the slug. And Host() takes
+    # exactly one argument in Traefik v3: a two-argument form is accepted by
+    # nobody and produces a 404 on the public url (it did, once).
     require(
-        "deploy/compose.server.yaml", "Host(`${APP_DOMAIN}`, `${APP_DOMAIN}`)", "the Traefik rule is derived"
+        "deploy/compose.server.yaml",
+        f"traefik.http.routers.{v['PROJECT_SLUG']}.rule: Host(`${{APP_DOMAIN}}`)",
+        "the Traefik rule interpolates the domain from project.env, and its key "
+        "cannot be interpolated so it must equal the slug",
     )
     forbid("deploy/compose.server.yaml", v["APP_DOMAIN"], "the domain must come from project.env")
 
