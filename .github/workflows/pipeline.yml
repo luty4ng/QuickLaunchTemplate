@@ -872,18 +872,20 @@ jobs:
         shell: bash
         env:
           VERSION: ${{ needs.versioning.outputs.version }}
+          REPO: ${{ github.repository }}
           SOURCE_FEED: ${{ matrix.target == 'windows' && 'latest.yml' || 'latest-linux.yml' }}
         run: |
           set -euo pipefail
-          # The URL inside the feed must point at the server that serves the
-          # installers (and, by the `.blockmap` suffix electron-updater appends,
-          # the block maps). Pointing it at the GitHub release asset instead would
-          # silently disable incremental updates.
+          # The URL inside the feed points at this deployment's own domain, so the
+          # block map (derived as `<url>.blockmap`) comes from the same origin and
+          # updates stay incremental. The installer itself is redirected to the
+          # release asset - see backend/app/routers/updates.py.
           python scripts/make_feed.py \
             --input "desktop/release/$SOURCE_FEED" \
             --output "updates/$SOURCE_FEED" \
             --version "$VERSION" \
-            --base-url "$SMOKE_URL/updates"
+            --base-url "$SMOKE_URL/updates" \
+            --github-repo "$REPO"
 
       - if: matrix.enabled == 'true' || matrix.target == 'windows'
         uses: actions/upload-artifact@v7
@@ -1280,11 +1282,13 @@ jobs:
           name: update-feed
           path: updates
 
-      # The installer is served from here too, not only attached to the release:
-      # electron-updater fetches the blockmap from `<installer url>.blockmap` and
-      # requests only the changed blocks. Different origin for the binary means no
-      # delta, so the release asset is a copy for humans and this is the one the
-      # updater uses.
+      # The block map is what makes an update incremental, and it has to live on
+      # the same origin the installer is addressed at (electron-updater derives its
+      # URL as `<installer url>.blockmap`). It is 115 KB, so it is uploaded. The
+      # 110 MB installer is not: pushing that from a runner to a server abroad
+      # measured ~28 KB/s, and `/updates/<installer>` redirects to the GitHub
+      # release asset instead - the client follows the redirect with its range
+      # request intact.
       - uses: actions/download-artifact@v8
         with:
           name: desktop-windows
@@ -1312,28 +1316,21 @@ jobs:
           ssh-keygen -F "${{ vars.DEPLOY_HOST }}" -f ~/.ssh/known_hosts >/dev/null \
             || { echo "::error::could not obtain a host key for ${{ vars.DEPLOY_HOST }}"; exit 1; }
 
-      - name: copy the feed and the installer to the server
+      - name: copy the feed and the block map to the server
         run: |
           set -euo pipefail
           ls -lh updates installers
-          echo "uploading $(du -sh installers | cut -f1) of installers ..."
-          start=$(date +%s)
           scp -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o BatchMode=yes \
             -o ServerAliveInterval=15 -o ServerAliveCountMax=8 \
-            updates/*.yml installers/*.exe installers/*.blockmap \
+            updates/*.yml installers/*.blockmap \
             "${{ vars.DEPLOY_USER }}@${{ vars.DEPLOY_HOST }}:~/$APP_DIR/updates/"
-          took=$(( $(date +%s) - start ))
-          echo "upload took ${took}s"
 
-      - name: keep only the recent installers on the server
+      - name: keep only the recent block maps on the server
         run: |
           set -euo pipefail
-          # Each release adds ~110 MB; the old ones are still downloadable from
-          # their own GitHub release, so only the recent few are kept here.
           ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o BatchMode=yes \
             "${{ vars.DEPLOY_USER }}@${{ vars.DEPLOY_HOST }}" \
-            "cd ~/$APP_DIR/updates && ls -1t *.exe 2>/dev/null | tail -n +4 | xargs -r rm -f && \
-             ls -1t *.blockmap 2>/dev/null | tail -n +4 | xargs -r rm -f && ls -lh"
+            "cd ~/$APP_DIR/updates && ls -1t *.blockmap 2>/dev/null | tail -n +4 | xargs -r rm -f && ls -lh"
 
       - name: the feed and the installer must answer on the public url
         run: |
@@ -1352,18 +1349,18 @@ jobs:
 
           installer_url="$(printf '%s\n' "$body" | sed -n 's/^ *- url: *//p' | head -1)"
           echo "installer url from the feed: $installer_url"
-          code="$(curl -sS -o /dev/null -w '%{http_code}' -I "$installer_url")"
-          [ "$code" = "200" ] || { echo "::error::$installer_url answers $code - every update would fail"; exit 1; }
+          # -L follows the 302 to the GitHub release asset, which is what a client
+          # does; the range request proves incremental updates can work (206). A
+          # 200 here means ranges are being ignored and every update would silently
+          # download all 110 MB.
+          range_code="$(curl -sS -L -o /dev/null -w '%{http_code}' -r 0-0 "$installer_url")"
+          [ "$range_code" = "206" ] || { echo "::error::$installer_url did not serve a range request ($range_code) - incremental updates would silently stop working"; exit 1; }
 
-          # Differential download is HTTP range requests against the installer and
-          # its blockmap. If ranges are not honoured, updates silently download the
-          # whole 110 MB - which is exactly what this step exists to catch.
-          range_code="$(curl -sS -o /dev/null -w '%{http_code}' -r 0-99 "$installer_url")"
-          [ "$range_code" = "206" ] || { echo "::error::$installer_url ignores range requests ($range_code) - incremental updates would silently stop working"; exit 1; }
-          blockmap_code="$(curl -sS -o /dev/null -w '%{http_code}' -I "${installer_url}.blockmap")"
-          [ "$blockmap_code" = "200" ] || { echo "::error::${installer_url}.blockmap answers $blockmap_code - no incremental updates"; exit 1; }
+          blockmap_url="${installer_url}.blockmap"
+          blockmap_code="$(curl -sS -L -o /dev/null -w '%{http_code}' -r 0-0 "$blockmap_url")"
+          [ "$blockmap_code" = "206" ] || { echo "::error::$blockmap_url answers $blockmap_code - no incremental updates"; exit 1; }
 
-          echo "::notice::feed live, installer downloadable, ranges honoured and blockmap present - incremental updates work"
+          echo "::notice::feed live, installer redirects to the release asset, ranges honoured, block map served - incremental updates work"
 
   # ---------------------------------------------------------------------
   # 5. Ship it to the server.

@@ -108,14 +108,18 @@ blockmap 是 115 KB，换来的是更新体积从 107 MB 降到几 MB——建�
 
 | 环节 | 变化 |
 |---|---|
-| 应用 | 新增 `GET /updates/latest.yml`（feed）与 `/updates/<安装包|块文件>`（静态、支持 Range），都从 `~/<slug>/updates/`（只读挂进容器）读 |
+| 应用 | `GET /updates/latest.yml`（feed）与 `/updates/<文件>`：本地有的直接发（支持 Range），**安装包那个名字返回 302 跳到 GitHub Release 附件** |
 | 客户端 | `desktop/app-config.json` 里写死 feed 地址（`https://<域名>/updates`），运行时可用 `QL_UPDATE_FEED_URL` 覆盖（自检用）；**保留差分下载** |
-| 打包 | `desktop` job 用 `scripts/make_feed.py --base-url https://<域名>/updates` 把 electron-builder 的 `latest.yml` 改写成绝对 URL（与块文件同源），作为单独的小产物交给下一步 |
-| 发布 | 新 job `update-feed`：把 feed + 安装包 + 块文件写到服务器 `~/<slug>/updates/`，只保留最近 3 版；然后**打公网地址逐项验证**：feed 版本号、安装包可下载、**Range 返回 206**、块文件存在 |
+| 打包 | `desktop` job 用 `scripts/make_feed.py --base-url https://<域名>/updates --github-repo <slug>`：feed 里的地址指向本域名（与块文件同源），并额外写一行 `github_url` 供应用做跳转 |
+| 发布 | 新 job `update-feed`：把 feed **与块文件（115 KB）**写到服务器（只留最近 3 份），然后**打公网地址逐项验证**：feed 版本号、安装包经 302 后 **Range 返回 206**、块文件存在且 Range 返回 206 |
 | 门禁 | 冒烟新增三项：feed 可读且含绝对 URL、feed 指向的安装包可下载、**Range 生效（206）** |
 
-代价（明确写出来）：**每次发版 CI 要把约 110 MB 的安装包上传到服务器一次**；
-客户端更新流量走自己的服务器（好处是增量后每次通常只有几 MB）；服务器上多存 3 版安装包（约 330 MB）。
+**为什么安装包不搬到服务器上**：试过了。CI runner（美国）→ 服务器实测约 **28 KB/s**，
+110 MB 要传一个小时（第一次实现时跑了 15 分钟只传了 25 MB，只能取消）。
+所以改成 302 跳转：客户端拿到的是本域名的地址（所以块文件同源、增量成立），
+字节仍然从 GitHub 取（它们的带宽），服务器只存 feed 与块文件。
+
+代价：客户端更新流量走 GitHub；服务器上只有几百 KB 的更新文件；跳转链路多一跳（302 不缓存）。
 
 > 一次性影响：装了 **1.2.3 及更早版本**的客户端仍然只认 GitHub Release 里的 feed，
 > 而那个 feed 不再更新——需要手动装一次 1.2.4 或更新版本；之后自动更新（含增量）照常。

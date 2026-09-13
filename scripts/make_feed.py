@@ -11,23 +11,31 @@ expects to sit in the same place as the binary:
 
 That works when the feed lives inside the release (relative URLs resolve against
 the release's download path). Ours is served from the application, so the URL has
-to be absolute - and it points at the **same origin the blockmap is on**, because
-electron-updater derives the blockmap URL from it (`<file url>.blockmap`) to fetch
-only the changed bytes. Serving the installer from anywhere else silently turns
-every update back into a full 107 MB download.
+to be absolute - and it points at **this deployment's own domain**, because
+electron-updater derives the blockmap URL from it (`<file url>.blockmap`) and only
+same-origin block maps can make an update incremental.
 
+The installer itself is not copied to the server. It is 110 MB, and pushing that
+from a CI runner to a server in another country measured ~28 KB/s (an hour per
+release). Instead `/updates/<installer>` answers a 302 to the GitHub release
+asset, which the client follows with its range request intact - so the bytes come
+from GitHub while the block map next to them comes from us:
+
+    version: 1.2.3
     files:
       - url: https://example.com/updates/QuickLaunch-Setup-1.2.3-x64.exe
         sha512: ...
         size: 111716043
+    github_url: https://github.com/owner/name/releases/download/v1.2.3/QuickLaunch-Setup-1.2.3-x64.exe
 
-`sha512` and `size` are copied verbatim - they are what the client verifies the
-download with, and inventing or dropping them would either fail every update or
-silently weaken the check.
+`github_url` is ours, not electron-updater's: it ignores unknown keys, and the app
+reads it to know where to redirect. `sha512` and `size` are copied verbatim - they
+are what the client verifies the download with, and inventing or dropping them
+would either fail every update or silently weaken the check.
 
     python scripts/make_feed.py --input desktop/release/latest.yml \\
         --version 1.2.3 --base-url https://example.com/updates \\
-        --output updates/latest.yml
+        --github-repo owner/name --output updates/latest.yml
 """
 
 from __future__ import annotations
@@ -71,14 +79,13 @@ def parse_feed(text: str) -> tuple[str, list[dict[str, str]]]:
     return version, files
 
 
-def build_feed(text: str, version: str, base_url: str) -> str:
+def build_feed(text: str, version: str, base_url: str, github_repo: str = "") -> str:
     """Rewrite the feed so every file URL is absolute.
 
-    `base_url` is where the installers (and their blockmaps) are served from -
-    normally `<domain>/updates`, the same place this feed is served from. The
-    blockmap URL is not written into the feed: electron-updater appends
-    `.blockmap` to whatever URL is here, which is precisely why the installer has
-    to live on the same origin as the blockmap.
+    `base_url` is where the feed and the block maps are served from - normally
+    `<domain>/updates`. The installer is *addressed* there too (so the client asks
+    the same origin for the block map), but the app redirects that one name to the
+    GitHub release asset instead of storing 110 MB on a small server.
     """
     advertised, files = parse_feed(text)
     if advertised and advertised != version:
@@ -88,12 +95,15 @@ def build_feed(text: str, version: str, base_url: str) -> str:
     if not files:
         raise SystemExit("::error::the input feed has no files entry - nothing to publish")
     base = base_url.rstrip("/")
+    redirects: list[str] = []
     for entry in files:
         name = entry.get("url", "")
         if not name:
             raise SystemExit("::error::the input feed has a file entry without a url")
         if name.startswith(("http://", "https://")):
             continue
+        if github_repo:
+            redirects.append(f"https://github.com/{github_repo}/releases/download/v{version}/{name}")
         entry["url"] = f"{base}/{name}"
 
     lines = [f"version: {version}", "files:"]
@@ -108,6 +118,10 @@ def build_feed(text: str, version: str, base_url: str) -> str:
     lines.append(f"path: {first['url']}")
     if "sha512" in first:
         lines.append(f"sha512: {first['sha512']}")
+    if redirects:
+        # Where the app sends a request for the installer it does not host itself.
+        # electron-updater ignores keys it does not know, so this is free.
+        lines.append(f"github_url: {redirects[0]}")
     return "\n".join(lines) + "\n"
 
 
@@ -121,7 +135,12 @@ def main() -> int:
     parser.add_argument(
         "--base-url",
         required=True,
-        help="where the installers are served from, e.g. https://example.com/updates",
+        help="where the feed and block maps are served from, e.g. https://example.com/updates",
+    )
+    parser.add_argument(
+        "--github-repo",
+        default="",
+        help="owner/name hosting the release; the installer is redirected there instead of being uploaded",
     )
     args = parser.parse_args()
 
@@ -131,7 +150,7 @@ def main() -> int:
             f"::error::{source} does not exist - the packaging step did not produce a feed", file=sys.stderr
         )
         return 1
-    feed = build_feed(source.read_text(encoding="utf-8"), args.version, args.base_url)
+    feed = build_feed(source.read_text(encoding="utf-8"), args.version, args.base_url, args.github_repo)
 
     target = Path(args.output)
     target.parent.mkdir(parents=True, exist_ok=True)
