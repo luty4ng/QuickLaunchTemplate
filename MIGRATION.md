@@ -162,7 +162,7 @@ web/src/
 | 删干净了没有 | `python scripts/rehearse_migration.py` | 全绿：把示例业务整块删掉后，骨架自己的测试仍然通过（CI 每次推送都跑两侧的半场） |
 | 迁移可逆 | `alembic upgrade head && alembic downgrade base && alembic upgrade head` | 三步都成功 |
 | 前端 | `cd web && npm run lint && npm run typecheck && npm test && npm run build` | 全绿；含 `src/layering.test.ts` 分层守卫与 `src/App.test.tsx` 渲染冒烟 |
-| 服务器 | `bash deploy/bootstrap-server.sh --check` | 全部 ✓ |
+| 服务器 | `bash deploy/bootstrap-server.sh --check` | 全部 ✓；在还没准备的机器上应当逐条报 ✗ 并给出修法（不会误报通过，退出码 1） |
 | 首次发版 | `git tag -a v0.1.0 -m "first" && git push origin v0.1.0` | 流水线全绿：Release 只有安装包、更新源公网可读且 Range=206、公网冒烟通过 |
 | 更新源 | `curl -s https://<域名>/updates/latest.yml` | `version: <你的版本>` |
 
@@ -172,6 +172,8 @@ web/src/
 
 1. **`users` 表上还留着 billing 的列**（`plan`、`stripe_*`）：拆表要先做一次数据迁移，
    单独做。骨架不读这些列，所以删掉 features/ 之后它们只是几列没人碰的字段。
-2. **`bootstrap-server.sh` 尚未在裸机上实测**：只在一台已经准备好的服务器上验证过
-   幂等性（重复执行为空操作）与 `--check`。
+2. **`bootstrap-server.sh` 的 apply 路径没在真正的空机器上跑过**：`--check` 已在"没有 docker、
+   没有部署目录、没有 .env"的干净环境里实测——逐条报 ✗ 并给出修法，退出码 1，**不会误报通过**；
+   幂等性（重复 apply 为空操作、`.env` 不被覆盖）也在一台已准备好的服务器上验证过。
+   仍然缺的是：在一台全新 VPS 上跑完整的 `--install-docker` → `--with-traefik` → apply 全链路。
 3. **安卓图标未接入** `branding/`：原生工程由 CI 生成，注入图标要再加一步。
