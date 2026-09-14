@@ -303,8 +303,11 @@ MIGRATION.md  迁移到新项目的完整清单（改名 → 服务器 → 换�
 
 ## 迁移到新项目
 
+**操作版看 [`MIGRATE.md`](MIGRATE.md)**（4 条命令 + 验收表 + 给 Agent 的快速迁移区块）；
+逐条理由与诚实清单在 `MIGRATION.md`。
+
 三条命令改名 + 一条命令准备服务器；剩下四件必须人工的事（DNS、部署公钥、GitHub Secret、
-可选 Stripe）都有明确理由。完整清单见 `MIGRATION.md`：
+可选 Stripe）都有明确理由：
 
 ```bash
 # 一次改掉域名/仓库/镜像名/包名等十余处，然后自检
